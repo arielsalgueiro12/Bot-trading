@@ -76,6 +76,12 @@ body {
     color: var(--tb-text);
 }
 
+.tb-page-lead {
+    max-width: 42rem;
+    font-size: 0.95rem;
+    line-height: 1.5;
+}
+
 .tb-page-title {
     font-weight: 600;
     letter-spacing: -0.03em;

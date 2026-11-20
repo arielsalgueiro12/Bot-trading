@@ -1,0 +1,294 @@
+@page "/copy-trading"
+@using TradingBots.App.Services.CopyMirror
+@inject ICopyMirrorService Mirror
+@implements IAsyncDisposable
+
+<PageTitle>Copy Trading</PageTitle>
+
+<h1 class="tb-page-title">Copy Mirror (prueba)</h1>
+<p class="tb-page-lead text-muted mb-4">
+    Ranking público de leads Binance Futures + mirror experimental sobre tu Spot.
+    Poll del order-history del lead; dry-run por defecto. No es el Copy Trading nativo de Binance.
+</p>
+
+@if (!string.IsNullOrWhiteSpace(_error))
+{
+    <div class="alert alert-danger">@_error</div>
+}
+
+<div class="row g-3 mb-4">
+    <div class="col-lg-7">
+        <div class="card h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span>Mejores leads (ROI 30D)</span>
+                <button class="btn btn-sm btn-outline-light" @onclick="LoadLeaderboardAsync" disabled="@_loadingBoard">
+                    @(_loadingBoard ? "Cargando..." : "Actualizar ranking")
+                </button>
+            </div>
+            <div class="card-body p-0">
+                @if (_leads.Count == 0)
+                {
+                    <p class="text-muted small p-3 mb-0">Pulsa actualizar para cargar el ranking público.</p>
+                }
+                else
+                {
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover mb-0 align-middle">
+                            <thead>
+                            <tr>
+                                <th>Lead</th>
+                                <th class="text-end">ROI%</th>
+                                <th class="text-end">PnL</th>
+                                <th class="text-end">MDD</th>
+                                <th class="text-end">Copiers</th>
+                                <th></th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            @foreach (var lead in _leads)
+                            {
+                                <tr class="@(Selected(lead) ? "table-active" : null)">
+                                    <td>
+                                        <div class="fw-semibold">@lead.Nickname</div>
+                                        <div class="text-muted small">@ShortId(lead.LeadPortfolioId)</div>
+                                    </td>
+                                    <td class="text-end">@lead.Roi.ToString("0.0")</td>
+                                    <td class="text-end">@lead.Pnl.ToString("0")</td>
+                                    <td class="text-end">@lead.Mdd.ToString("0.0")</td>
+                                    <td class="text-end">@lead.CurrentCopyCount/@lead.MaxCopyCount</td>
+                                    <td class="text-end">
+                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => SelectLead(lead)">Usar</button>
+                                    </td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-5">
+        <div class="card h-100">
+            <div class="card-header">Activar mirror</div>
+            <div class="card-body d-flex flex-column gap-3">
+                <div>
+                    <label class="form-label small mb-1">Lead portfolio ID</label>
+                    <input class="form-control form-control-sm" @bind="_form.LeadPortfolioId" placeholder="pega ID o elige del ranking" />
+                    @if (!string.IsNullOrWhiteSpace(_form.LeadNickname))
+                    {
+                        <div class="form-text">@_form.LeadNickname</div>
+                    }
+                </div>
+                <div class="row g-2">
+                    <div class="col-6">
+                        <label class="form-label small mb-1">USDT por trade</label>
+                        <input class="form-control form-control-sm" type="number" min="5" step="1" @bind="_form.QuotePerTradeUsdt" />
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label small mb-1">Poll (ms)</label>
+                        <input class="form-control form-control-sm" type="number" min="1000" step="500" @bind="_form.PollIntervalMs" />
+                    </div>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="dryRun" @bind="_form.DryRun" />
+                    <label class="form-check-label" for="dryRun">Dry-run (solo log, sin ordenes Spot)</label>
+                </div>
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="longOnly" @bind="_form.LongOnly" />
+                    <label class="form-check-label" for="longOnly">Solo LONG (ignora shorts Futures)</label>
+                </div>
+                <div class="d-flex flex-wrap gap-2">
+                    <button class="btn btn-primary" @onclick="StartAsync" disabled="@string.IsNullOrWhiteSpace(_form.LeadPortfolioId)">
+                        Iniciar mirror
+                    </button>
+                    <button class="btn btn-outline-light" @onclick="StopAsync">Detener</button>
+                </div>
+                <p class="small text-muted mb-0">
+                    Warm-up: la primera lectura marca el historial y no copia nada viejo.
+                    LIVE solo compra/vende Spot en LONG; simbolos Futures-only o shorts se saltan.
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+
+@{
+    var st = Mirror.GetStatus();
+}
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="card h-100">
+            <div class="card-header">Estado</div>
+            <div class="card-body small">
+                <div><strong>Activo:</strong> @(st.Settings.Enabled ? "si" : "no") @(st.Settings.DryRun ? "(dry-run)" : "(LIVE)")</div>
+                <div><strong>Lead:</strong> @(string.IsNullOrWhiteSpace(st.Settings.LeadNickname) ? "—" : st.Settings.LeadNickname)</div>
+                <div><strong>Warm-up:</strong> @(st.WarmingUp ? "si" : "no")</div>
+                <div><strong>Ultimo poll:</strong> @(st.LastPollUtc?.ToString("HH:mm:ss") ?? "—") (@st.LastPollMs ms)</div>
+                <div><strong>Vistos / buy / sell / skip:</strong> @st.SeenOrders / @st.MirroredBuys / @st.MirroredSells / @st.Skipped</div>
+                @if (!string.IsNullOrWhiteSpace(st.LastError))
+                {
+                    <div class="text-danger mt-2">@st.LastError</div>
+                }
+            </div>
+        </div>
+    </div>
+    <div class="col-md-8">
+        <div class="card h-100">
+            <div class="card-header">Eventos (delay detectado vs orden del lead)</div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height: 280px; overflow:auto;">
+                    <table class="table table-sm mb-0">
+                        <thead>
+                        <tr>
+                            <th>UTC</th>
+                            <th>Tipo</th>
+                            <th>Delay</th>
+                            <th>Detalle</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        @foreach (var ev in st.RecentEvents)
+                        {
+                            <tr>
+                                <td class="text-nowrap">@ev.Utc.ToString("HH:mm:ss")</td>
+                                <td>@ev.Kind</td>
+                                <td class="text-nowrap">
+                                    @(ev.DetectDelayMs is null ? "—" : $"{ev.DetectDelayMs}ms")
+                                    @if (ev.ExecDelayMs is not null)
+                                    {
+                                        <span> / exec @ev.ExecDelayMs ms</span>
+                                    }
+                                </td>
+                                <td class="small">@ev.Message</td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="alert alert-warning border-0 mb-0" role="status">
+    Limite real: Binance no publica fills tick-a-tick. El delay minimo tipico es el del poll (~1–3s)
+    mas el refresco interno de su order-history. Endpoints no oficiales pueden rate-limitar o cambiar.
+</div>
+
+@code {
+    private readonly List<CopyLeadSummary> _leads = [];
+    private CopyMirrorSettings _form = new() { DryRun = true, LongOnly = true, QuotePerTradeUsdt = 15m, PollIntervalMs = 2000 };
+    private bool _loadingBoard;
+    private string? _error;
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _uiCts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var st = Mirror.GetStatus();
+        _form = new CopyMirrorSettings
+        {
+            Enabled = st.Settings.Enabled,
+            DryRun = st.Settings.DryRun,
+            LongOnly = st.Settings.LongOnly,
+            LeadPortfolioId = st.Settings.LeadPortfolioId,
+            LeadNickname = st.Settings.LeadNickname,
+            QuotePerTradeUsdt = st.Settings.QuotePerTradeUsdt,
+            PollIntervalMs = st.Settings.PollIntervalMs
+        };
+        _uiCts = new CancellationTokenSource();
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        _ = RefreshLoopAsync(_uiCts.Token);
+        await LoadLeaderboardAsync();
+    }
+
+    private async Task RefreshLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (_timer is not null && await _timer.WaitForNextTickAsync(ct))
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task LoadLeaderboardAsync()
+    {
+        _loadingBoard = true;
+        _error = null;
+        try
+        {
+            var list = await Mirror.GetLeaderboardAsync();
+            _leads.Clear();
+            _leads.AddRange(list);
+            if (_leads.Count == 0)
+            {
+                _error = "No se pudo cargar el ranking (rate-limit o endpoint ocupado). Reintenta.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _loadingBoard = false;
+        }
+    }
+
+    private void SelectLead(CopyLeadSummary lead)
+    {
+        _form.LeadPortfolioId = lead.LeadPortfolioId;
+        _form.LeadNickname = lead.Nickname;
+    }
+
+    private bool Selected(CopyLeadSummary lead) =>
+        string.Equals(_form.LeadPortfolioId, lead.LeadPortfolioId, StringComparison.Ordinal);
+
+    private Task StartAsync()
+    {
+        _error = null;
+        if (string.IsNullOrWhiteSpace(_form.LeadPortfolioId))
+        {
+            _error = "Elige un lead o pega su portfolio ID.";
+            return Task.CompletedTask;
+        }
+
+        Mirror.UpdateSettings(new CopyMirrorSettings
+        {
+            Enabled = true,
+            DryRun = _form.DryRun,
+            LongOnly = _form.LongOnly,
+            LeadPortfolioId = _form.LeadPortfolioId.Trim(),
+            LeadNickname = _form.LeadNickname,
+            QuotePerTradeUsdt = _form.QuotePerTradeUsdt,
+            PollIntervalMs = _form.PollIntervalMs
+        });
+        return Task.CompletedTask;
+    }
+
+    private Task StopAsync()
+    {
+        Mirror.Stop();
+        return Task.CompletedTask;
+    }
+
+    private static string ShortId(string id) =>
+        string.IsNullOrEmpty(id) ? "" : (id.Length <= 10 ? id : id[..6] + "…" + id[^4..]);
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_uiCts is not null)
+        {
+            await _uiCts.CancelAsync();
+            _uiCts.Dispose();
+        }
+        _timer?.Dispose();
+    }
+}

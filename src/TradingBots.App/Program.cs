@@ -103,6 +103,19 @@ builder.Services.AddSingleton<IStrategySignalRegistry, StrategySignalRegistry>()
 builder.Services.AddSingleton<IRuntimeStatusService, RuntimeStatusService>();
 builder.Services.AddHostedService<BotExecutionBackgroundService>();
 builder.Services.AddHostedService<MarketHistoryBackgroundService>();
+builder.Services.AddHttpClient<TradingBots.App.Services.CopyMirror.IBinanceCopyTradingLeadClient, TradingBots.App.Services.CopyMirror.BinanceCopyTradingLeadClient>()
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        AutomaticDecompression = DecompressionMethods.All,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+    })
+    .ConfigureHttpClient(client =>
+    {
+        client.Timeout = TimeSpan.FromSeconds(20);
+        client.BaseAddress = new Uri("https://www.binance.com/");
+    });
+builder.Services.AddSingleton<TradingBots.App.Services.CopyMirror.ICopyMirrorService, TradingBots.App.Services.CopyMirror.CopyMirrorService>();
+builder.Services.AddHostedService<TradingBots.App.Services.CopyMirror.CopyMirrorHostedService>();
 
 // --- Autenticacion JWT (comentada: app publica, ver PublicAppMode.Enabled) ---
 // var jwtSettings = builder.Configuration.GetSection(JwtSettings.SectionName).Get<JwtSettings>() ?? new JwtSettings();

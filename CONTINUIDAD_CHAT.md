@@ -13,6 +13,20 @@ Incluye:
 - pendientes recomendados
 - prompt sugerido para retomar el trabajo
 
+## Copy Mirror experimental (2026-11-20d)
+
+- `/copy-trading`: ranking publico leads Futures + mirror de prueba.
+- Poll `order-history` del lead (~1–3s), warm-up sin copiar historico.
+- Default **dry-run**; LIVE solo LONG→Spot (BUY/SELL). Shorts y simbolos no Spot se saltan.
+- Delay minimo acotado por refresco Binance + intervalo de poll (no hay stream oficial de fills).
+- Servicios: `CopyMirror/*` + hosted service.
+
+## Copy Trading guia UI (2026-11-20c)
+
+- Nueva pagina `/copy-trading`: guia para seguir Lead Traders en Binance Copy Trading (Spot/Futures).
+- Nav: enlace "Copy Trading".
+- Evolucionado a mirror experimental (ver 2026-11-20d).
+
 ## Actualizacion perfil expectancy HTF (2026-11-20b)
 
 Objetivo: maximizar ganancias / reducir perdidas en trend-pullback (evidencia: soft-BE destruye edge).
