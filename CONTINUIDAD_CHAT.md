@@ -13,6 +13,12 @@ Incluye:
 - pendientes recomendados
 - prompt sugerido para retomar el trabajo
 
+## Mantenimiento ya no baja el cap a 2 (2026-11-21 15:00Z)
+
+- `BotMaintenanceService` tenia `DefaultMaxRunning = 2` y, en cada arranque, si `MaxAutoBots > 2` lo pisaba a 2. El redeploy de copy-mirror (~14:23Z) bajo la flota de 5 a 2 y detuvo ADA por "exceso de bots auto (max 2)".
+- El tope de consolidacion queda en `SafeLiveMaxAutoBots` (5). Un valor 1..5 persistido se respeta. `SafeLiveMaxDailyLossUsdt` sigue en 3.
+- Universo sin cambio: majors USDT con BUY advisor. Sin sangrado de trades en ese corte (PnL 0).
+
 ## AutoPilot majors por BUY advisor (2026-11-21b)
 
 - Reaplicado tras revert del agente (`b95cb55`): AutoPilot crea bots con BUY + quality gate en majors USDT (BTC/ETH/SOL/BNB/XRP/ADA/DOGE).

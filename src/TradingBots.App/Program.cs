@@ -636,7 +636,7 @@ using (var scope = app.Services.CreateScope())
     }
     else
     {
-        // Flota segura HTF: cap 2. MaxAutoBots=0 (halt viejo del gate) se reabre para permitir BUY del advisor.
+        // Flota segura HTF: cap SafeLiveMaxAutoBots (5). MaxAutoBots=0 (halt viejo) se reabre. Un valor 1..5 se respeta.
         await db.BinanceSettings
             .Where(x => x.MaxAutoBots == 0 || x.MaxAutoBots > StrategyExitProfiles.SafeLiveMaxAutoBots)
             .ExecuteUpdateAsync(s => s

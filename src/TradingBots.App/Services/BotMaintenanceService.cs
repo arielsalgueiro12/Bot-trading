@@ -16,8 +16,6 @@ public sealed class BotMaintenanceService(
     IMarketHistoryService marketHistory,
     IBinanceSettingsService settingsService) : IBotMaintenanceService
 {
-    private const int MaxAutoBotsHardCap = 15;
-    private const int DefaultMaxRunning = 2;
     private const int TargetMaxTotalBots = 30;
 
     public async Task<BotMaintenanceResult> ConsolidateFleetAsync(CancellationToken ct = default)
@@ -112,12 +110,15 @@ public sealed class BotMaintenanceService(
             stopped++;
         }
 
-        if (settings.MaxAutoBots > MaxAutoBotsHardCap || settings.MaxAutoBots > DefaultMaxRunning)
+        // Solo baja un cap por encima de la politica (majors, SafeLiveMaxAutoBots=5).
+        // No volver a 2: un redeploy pisaba MaxAutoBots=5 en cada arranque.
+        var safeCap = StrategyExitProfiles.SafeLiveMaxAutoBots;
+        if (settings.MaxAutoBots > safeCap)
         {
             var row = await db.BinanceSettings.FirstOrDefaultAsync(x => x.Id == 1, ct);
-            if (row is not null && row.MaxAutoBots != DefaultMaxRunning)
+            if (row is not null && row.MaxAutoBots != safeCap)
             {
-                row.MaxAutoBots = DefaultMaxRunning;
+                row.MaxAutoBots = safeCap;
                 row.UpdatedAtUtc = now;
             }
         }

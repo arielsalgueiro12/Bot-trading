@@ -16,7 +16,7 @@ public interface IBacktestGateService
 
 /// <summary>
 /// Gate Live HTF: BTC+ETH 45d. Pasa si ambos VERDE, o agregado PF&gt;=1.05 con n&gt;=20 y neto&gt;0.
-/// Al pasar, asegura MaxAutoBots=2 y baja GlobalMaxDailyLoss a 3 USDT.
+/// Al pasar, asegura MaxAutoBots=SafeLiveMaxAutoBots (5) y baja GlobalMaxDailyLoss a 3 USDT.
 /// El FAIL ya no pone MaxAutoBots=0: la creacion de bots la gobierna la señal BUY del advisor.
 /// Se reevalua periodicamente (diagnostico / semaforo).
 /// </summary>
@@ -129,7 +129,7 @@ public sealed class BacktestGateService(
 
         if (gatePass)
         {
-            // Reapertura controlada: max 2 bots, perdida diaria global 3 USDT.
+            // Reapertura controlada: max SafeLiveMaxAutoBots (5), perdida diaria global 3 USDT.
             if (row.MaxAutoBots <= 0 || row.MaxAutoBots > StrategyExitProfiles.SafeLiveMaxAutoBots)
             {
                 row.MaxAutoBots = StrategyExitProfiles.SafeLiveMaxAutoBots;
