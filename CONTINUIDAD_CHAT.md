@@ -13,6 +13,13 @@ Incluye:
 - pendientes recomendados
 - prompt sugerido para retomar el trabajo
 
+## AutoPilot por BUY advisor en majors (2026-11-21)
+
+- AutoPilot ya no se limita a BTCUSDT/ETHUSDT para crear bots.
+- Crea/reactiva con señal **BUY** + quality gate en universo liquido (`IsAutopilotAllowedSymbol`: BTC/ETH/SOL/BNB/XRP/ADA/DOGE).
+- `SafeLiveMaxAutoBots` = **5** (antes 2).
+- Sigue sin comprar hasta que PullbackHtf confirme entrada (RSI zona, MTF, etc.).
+
 ## Copy Mirror experimental (2026-11-20d)
 
 - `/copy-trading`: ranking publico leads Futures + mirror de prueba.

@@ -13,7 +13,8 @@ public static class StrategyExitProfiles
     /// <summary>~7.5% del budget diario: corta el dia si sangra.</summary>
     public const decimal HtfMaxDailyLossUsdt = 0.90m;
     public const int HtfMaxConsecutiveLosses = 2;
-    public const int SafeLiveMaxAutoBots = 2;
+    /// <summary>Cap flota AutoPilot: majors liquidos con BUY advisor (antes 2 = solo BTC/ETH de facto).</summary>
+    public const int SafeLiveMaxAutoBots = 5;
 
     /// <summary>TP1 = 1.5R con venta parcial 50%; el runner va a trail/TP2.</summary>
     public const decimal HtfTakeProfit1Percent = 2.25m;
