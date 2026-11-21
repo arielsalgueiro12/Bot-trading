@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using TradingBots.App.Data;
 using TradingBots.App.Models;
+using TradingBots.App.Services.Strategies;
 
 namespace TradingBots.App.Services;
 
@@ -23,7 +24,7 @@ public sealed class BotMaintenanceService(
     {
         var settings = await settingsService.GetActiveSettingsAsync();
         var haltFleet = settings.MaxAutoBots <= 0;
-        var maxRunning = haltFleet ? 0 : Math.Clamp(settings.MaxAutoBots, 1, MaxAutoBotsHardCap);
+        var maxRunning = haltFleet ? 0 : Math.Clamp(settings.MaxAutoBots, 1, StrategyExitProfiles.SafeLiveMaxAutoBots);
         var bots = await db.Bots.OrderByDescending(x => x.State).ThenBy(x => x.Name).ToListAsync(ct);
         var botIds = bots.Select(x => x.Id).ToList();
         var tradeCounts = await db.Trades

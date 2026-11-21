@@ -13,12 +13,11 @@ Incluye:
 - pendientes recomendados
 - prompt sugerido para retomar el trabajo
 
-## AutoPilot por BUY advisor en majors (2026-11-21)
+## Cap flota 2, solo BTC/ETH (2026-11-21 11:00Z)
 
-- AutoPilot ya no se limita a BTCUSDT/ETHUSDT para crear bots.
-- Crea/reactiva con señal **BUY** + quality gate en universo liquido (`IsAutopilotAllowedSymbol`: BTC/ETH/SOL/BNB/XRP/ADA/DOGE).
-- `SafeLiveMaxAutoBots` = **5** (antes 2).
-- Sigue sin comprar hasta que PullbackHtf confirme entrada (RSI zona, MTF, etc.).
+- Se revierte la ampliacion a SOL/BNB/XRP/ADA/DOGE y `SafeLiveMaxAutoBots=5`: 0 trades cerrados, gate HTF ROJO, sin expectancy.
+- AutoPilot vuelve a crear solo BTCUSDT/ETHUSDT. Cap = 2. Perdida diaria global que puede persistir = 3 USDT.
+- Un PUT de settings con API key vacia ya no borra la key. El formulario reenvia los knobs de AutoTune para no pisarlos con el default.
 
 ## Copy Mirror experimental (2026-11-20d)
 

@@ -101,11 +101,10 @@ public sealed class AutoTraderService(
                 continue;
             }
 
-            if (!EntryFilters.IsAutopilotAllowedSymbol(sym))
+            if (!EntryFilters.IsPreferredRecoverySymbol(sym))
             {
                 bot.State = BotState.Stopped;
-                bot.LastExecutionError =
-                    "AutoTrader: simbolo fuera del universo liquido AutoPilot (majors/mid-caps).";
+                bot.LastExecutionError = "AutoTrader: flota acotada a BTCUSDT/ETHUSDT (calidad sobre cantidad).";
                 bot.UpdatedAtUtc = now;
                 bot.OutOfTopCycles = 0;
                 continue;
@@ -179,8 +178,7 @@ public sealed class AutoTraderService(
             .GroupBy(x => x.Symbol)
             .Select(g => g.OrderByDescending(x => x.CreatedAtUtc).First())
             .Where(x =>
-                        EntryFilters.IsAutopilotAllowedSymbol(x.Symbol) &&
-                        x.Symbol.EndsWith("USDT", StringComparison.OrdinalIgnoreCase) &&
+                        EntryFilters.IsPreferredRecoverySymbol(x.Symbol) &&
                         x.Signal == "BUY" &&
                         x.SuggestedStrategy == StrategyType.PullbackHtf &&
                         PassesQualityGate(x, symbolBias) &&
@@ -240,8 +238,8 @@ public sealed class AutoTraderService(
 
             var runningSymbol = running.Symbols.FirstOrDefault() ?? string.Empty;
             var activeAge = now - (running.LastRunningStartedAtUtc ?? running.CreatedAtUtc);
-            // Rebalanceo: si ya no hay BUY advisor vigente para el simbolo, libera slot al cabo de N ciclos.
             if (!string.IsNullOrWhiteSpace(runningSymbol) &&
+                !EntryFilters.IsPreferredRecoverySymbol(runningSymbol) &&
                 !targetSymbols.Contains(runningSymbol) &&
                 activeAge >= minActiveBeforePause)
             {

@@ -44,7 +44,9 @@ public sealed class PortfolioRiskService(
         CancellationToken ct = default)
     {
         var settings = await settingsService.GetActiveSettingsAsync();
-        var globalMaxLoss = settings.GlobalMaxDailyLossUsdt <= 0m ? 15m : settings.GlobalMaxDailyLossUsdt;
+        var globalMaxLoss = settings.GlobalMaxDailyLossUsdt <= 0m
+            ? StrategyExitProfiles.SafeLiveMaxDailyLossUsdt
+            : Math.Min(settings.GlobalMaxDailyLossUsdt, StrategyExitProfiles.SafeLiveMaxDailyLossUsdt);
         var btcGate = settings.BtcCrashGatePercent <= 0m ? 3m : settings.BtcCrashGatePercent;
         var maxAlts = settings.MaxConcurrentAltPositions <= 0 ? 4 : settings.MaxConcurrentAltPositions;
         // Alineado con SafeLiveMaxAutoBots: cada bot de la flota puede tener su propia posicion.

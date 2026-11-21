@@ -135,9 +135,9 @@ public sealed class BacktestGateService(
                 row.MaxAutoBots = StrategyExitProfiles.SafeLiveMaxAutoBots;
             }
 
-            if (row.GlobalMaxDailyLossUsdt <= 0m || row.GlobalMaxDailyLossUsdt > 3m)
+            if (row.GlobalMaxDailyLossUsdt <= 0m || row.GlobalMaxDailyLossUsdt > StrategyExitProfiles.SafeLiveMaxDailyLossUsdt)
             {
-                row.GlobalMaxDailyLossUsdt = 3m;
+                row.GlobalMaxDailyLossUsdt = StrategyExitProfiles.SafeLiveMaxDailyLossUsdt;
             }
 
             row.UpdatedAtUtc = DateTime.UtcNow;

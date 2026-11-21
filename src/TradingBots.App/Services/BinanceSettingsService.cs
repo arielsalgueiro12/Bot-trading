@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using TradingBots.App.Data;
 using TradingBots.App.Models;
+using TradingBots.App.Services.Strategies;
 
 namespace TradingBots.App.Services;
 
@@ -54,7 +55,9 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         settings.Environment = request.Environment;
         settings.LiveSafetyConfirmed = request.LiveSafetyConfirmed;
         settings.GlobalKillSwitch = request.GlobalKillSwitch;
-        settings.MaxAutoBots = Math.Clamp(request.MaxAutoBots, 0, 15);
+        settings.MaxAutoBots = request.MaxAutoBots <= 0
+            ? 0
+            : Math.Clamp(request.MaxAutoBots, 1, StrategyExitProfiles.SafeLiveMaxAutoBots);
         settings.AutoControlTuningEnabled = request.AutoControlTuningEnabled;
         settings.SupervisorInactiveMinutes = Math.Clamp(request.SupervisorInactiveMinutes, 60, 300);
         settings.RebalanceOutOfTopCycles = Math.Clamp(request.RebalanceOutOfTopCycles, 2, 6);
@@ -65,13 +68,20 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         settings.MlShadowMode = request.MlShadowMode;
         settings.MlMinWinProbability = decimal.Clamp(request.MlMinWinProbability, 0.50m, 0.90m);
         settings.MlMinSamples = Math.Clamp(request.MlMinSamples, 30, 5000);
-        // Minimo 1 USDT para no pisar el 3 USDT del backtest gate al guardar settings.
-        settings.GlobalMaxDailyLossUsdt = request.GlobalMaxDailyLossUsdt <= 0m ? 15m : decimal.Clamp(request.GlobalMaxDailyLossUsdt, 1m, 500m);
+        // Un body parcial (default 0 o 15) no puede reabrir el tope de 3 USDT.
+        settings.GlobalMaxDailyLossUsdt = request.GlobalMaxDailyLossUsdt <= 0m
+            ? StrategyExitProfiles.SafeLiveMaxDailyLossUsdt
+            : decimal.Clamp(request.GlobalMaxDailyLossUsdt, 1m, StrategyExitProfiles.SafeLiveMaxDailyLossUsdt);
         settings.BtcCrashGatePercent = request.BtcCrashGatePercent <= 0m ? 3m : decimal.Clamp(request.BtcCrashGatePercent, 1m, 15m);
         settings.MaxConcurrentAltPositions = Math.Clamp(request.MaxConcurrentAltPositions <= 0 ? 4 : request.MaxConcurrentAltPositions, 1, 20);
         settings.NeverTradedStopHours = Math.Clamp(request.NeverTradedStopHours <= 0 ? 36 : request.NeverTradedStopHours, 12, 168);
         settings.LiveEnabledByChecklist = request.LiveEnabledByChecklist && settings.LiveEnabledByChecklist;
-        settings.ApiKey = request.ApiKey.Trim();
+        var newKey = request.ApiKey.Trim();
+        if (!string.IsNullOrWhiteSpace(newKey))
+        {
+            settings.ApiKey = newKey;
+        }
+
         var newSecret = request.ApiSecret.Trim();
         if (!string.IsNullOrWhiteSpace(newSecret))
         {

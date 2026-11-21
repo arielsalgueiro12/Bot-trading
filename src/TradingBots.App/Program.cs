@@ -629,7 +629,8 @@ using (var scope = app.Services.CreateScope())
         {
             IsEnabled = false,
             Environment = BinanceEnvironment.Sandbox,
-            MaxAutoBots = 6
+            MaxAutoBots = StrategyExitProfiles.SafeLiveMaxAutoBots,
+            GlobalMaxDailyLossUsdt = StrategyExitProfiles.SafeLiveMaxDailyLossUsdt
         });
         await db.SaveChangesAsync();
     }
@@ -642,9 +643,9 @@ using (var scope = app.Services.CreateScope())
                 .SetProperty(x => x.MaxAutoBots, StrategyExitProfiles.SafeLiveMaxAutoBots)
                 .SetProperty(x => x.UpdatedAtUtc, DateTime.UtcNow));
         await db.BinanceSettings
-            .Where(x => x.GlobalMaxDailyLossUsdt > 3m)
+            .Where(x => x.GlobalMaxDailyLossUsdt > StrategyExitProfiles.SafeLiveMaxDailyLossUsdt)
             .ExecuteUpdateAsync(s => s
-                .SetProperty(x => x.GlobalMaxDailyLossUsdt, 3m)
+                .SetProperty(x => x.GlobalMaxDailyLossUsdt, StrategyExitProfiles.SafeLiveMaxDailyLossUsdt)
                 .SetProperty(x => x.UpdatedAtUtc, DateTime.UtcNow));
     }
 }
