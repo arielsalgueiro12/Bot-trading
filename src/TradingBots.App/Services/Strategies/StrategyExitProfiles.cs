@@ -13,8 +13,8 @@ public static class StrategyExitProfiles
     /// <summary>~7.5% del budget diario: corta el dia si sangra.</summary>
     public const decimal HtfMaxDailyLossUsdt = 0.90m;
     public const int HtfMaxConsecutiveLosses = 2;
-    /// <summary>Cap de flota Live: solo BTCUSDT/ETHUSDT. No subir sin expectancy medida.</summary>
-    public const int SafeLiveMaxAutoBots = 2;
+    /// <summary>Cap flota AutoPilot: majors liquidos con BUY advisor (BTC/ETH/SOL/BNB/XRP/ADA/DOGE).</summary>
+    public const int SafeLiveMaxAutoBots = 5;
     /// <summary>Perdida diaria global maxima que puede persistir. Un guardado parcial no reabre el default 15.</summary>
     public const decimal SafeLiveMaxDailyLossUsdt = 3m;
 

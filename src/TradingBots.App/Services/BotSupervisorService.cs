@@ -54,8 +54,8 @@ public sealed class BotSupervisorService(
 
             var sym = bot.Symbols.FirstOrDefault() ?? string.Empty;
 
-            // Flota recovery BTC/ETH: no cortar por inactividad histórica al reactivar.
-            if (EntryFilters.IsPreferredRecoverySymbol(sym))
+            // Majors AutoPilot: no cortar por inactividad mientras esperan entrada HTF (RSI zona, etc.).
+            if (EntryFilters.IsAutopilotAllowedSymbol(sym))
             {
                 continue;
             }
