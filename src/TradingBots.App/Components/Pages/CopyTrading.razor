@@ -1,6 +1,7 @@
 @page "/copy-trading"
 @using TradingBots.App.Services.CopyMirror
 @inject ICopyMirrorService Mirror
+@inject IServiceScopeFactory ScopeFactory
 @implements IAsyncDisposable
 
 <PageTitle>Copy Trading</PageTitle>
@@ -15,13 +16,17 @@
 {
     <div class="alert alert-danger">@_error</div>
 }
+@if (!string.IsNullOrWhiteSpace(_info))
+{
+    <div class="alert alert-success">@_info</div>
+}
 
 <div class="row g-3 mb-4">
     <div class="col-lg-7">
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <span>Mejores leads (ROI 30D)</span>
-                <button class="btn btn-sm btn-outline-light" @onclick="LoadLeaderboardAsync" disabled="@_loadingBoard">
+                <button class="btn btn-sm btn-outline-light" type="button" @onclick="LoadLeaderboardAsync" disabled="@_loadingBoard">
                     @(_loadingBoard ? "Cargando..." : "Actualizar ranking")
                 </button>
             </div>
@@ -57,7 +62,10 @@
                                     <td class="text-end">@lead.Mdd.ToString("0.0")</td>
                                     <td class="text-end">@lead.CurrentCopyCount/@lead.MaxCopyCount</td>
                                     <td class="text-end">
-                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => SelectLead(lead)">Usar</button>
+                                        <button class="btn btn-sm btn-outline-primary" type="button"
+                                                @onclick="() => SelectLead(lead)">
+                                            Usar
+                                        </button>
                                     </td>
                                 </tr>
                             }
@@ -75,10 +83,17 @@
             <div class="card-body d-flex flex-column gap-3">
                 <div>
                     <label class="form-label small mb-1">Lead portfolio ID</label>
-                    <input class="form-control form-control-sm" @bind="_form.LeadPortfolioId" placeholder="pega ID o elige del ranking" />
+                    <input class="form-control form-control-sm"
+                           value="@_form.LeadPortfolioId"
+                           @oninput="OnPortfolioIdInput"
+                           placeholder="pulsa Usar en un lead (ID numerico completo)" />
                     @if (!string.IsNullOrWhiteSpace(_form.LeadNickname))
                     {
-                        <div class="form-text">@_form.LeadNickname</div>
+                        <div class="form-text">Seleccionado: @_form.LeadNickname</div>
+                    }
+                    else if (string.IsNullOrWhiteSpace(_form.LeadPortfolioId))
+                    {
+                        <div class="form-text text-warning">Primero pulsa <strong>Usar</strong> en un lead de la lista.</div>
                     }
                 </div>
                 <div class="row g-2">
@@ -100,14 +115,17 @@
                     <label class="form-check-label" for="longOnly">Solo LONG (ignora shorts Futures)</label>
                 </div>
                 <div class="d-flex flex-wrap gap-2">
-                    <button class="btn btn-primary" @onclick="StartAsync" disabled="@string.IsNullOrWhiteSpace(_form.LeadPortfolioId)">
-                        Iniciar mirror
+                    <button class="btn btn-primary" type="button" @onclick="StartAsync"
+                            disabled="@(!CanStart || _starting)">
+                        @(_starting ? "Iniciando..." : "Iniciar mirror")
                     </button>
-                    <button class="btn btn-outline-light" @onclick="StopAsync">Detener</button>
+                    <button class="btn btn-outline-light" type="button" @onclick="StopAsync" disabled="@_starting">
+                        Detener
+                    </button>
                 </div>
                 <p class="small text-muted mb-0">
                     Warm-up: la primera lectura marca el historial y no copia nada viejo.
-                    LIVE solo compra/vende Spot en LONG; simbolos Futures-only o shorts se saltan.
+                    Luego solo reacciona a ordenes NUEVAS del lead. LIVE solo LONG Spot.
                 </p>
             </div>
         </div>
@@ -122,8 +140,8 @@
         <div class="card h-100">
             <div class="card-header">Estado</div>
             <div class="card-body small">
-                <div><strong>Activo:</strong> @(st.Settings.Enabled ? "si" : "no") @(st.Settings.DryRun ? "(dry-run)" : "(LIVE)")</div>
-                <div><strong>Lead:</strong> @(string.IsNullOrWhiteSpace(st.Settings.LeadNickname) ? "—" : st.Settings.LeadNickname)</div>
+                <div><strong>Activo:</strong> @(st.Settings.Enabled ? "SI" : "no") @(st.Settings.DryRun ? "(dry-run)" : "(LIVE)")</div>
+                <div><strong>Lead:</strong> @(string.IsNullOrWhiteSpace(st.Settings.LeadNickname) ? (string.IsNullOrWhiteSpace(st.Settings.LeadPortfolioId) ? "—" : ShortId(st.Settings.LeadPortfolioId)) : st.Settings.LeadNickname)</div>
                 <div><strong>Warm-up:</strong> @(st.WarmingUp ? "si" : "no")</div>
                 <div><strong>Ultimo poll:</strong> @(st.LastPollUtc?.ToString("HH:mm:ss") ?? "—") (@st.LastPollMs ms)</div>
                 <div><strong>Vistos / buy / sell / skip:</strong> @st.SeenOrders / @st.MirroredBuys / @st.MirroredSells / @st.Skipped</div>
@@ -138,35 +156,42 @@
         <div class="card h-100">
             <div class="card-header">Eventos (delay detectado vs orden del lead)</div>
             <div class="card-body p-0">
-                <div class="table-responsive" style="max-height: 280px; overflow:auto;">
-                    <table class="table table-sm mb-0">
-                        <thead>
-                        <tr>
-                            <th>UTC</th>
-                            <th>Tipo</th>
-                            <th>Delay</th>
-                            <th>Detalle</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        @foreach (var ev in st.RecentEvents)
-                        {
+                @if (st.RecentEvents.Count == 0)
+                {
+                    <p class="text-muted small p-3 mb-0">Sin eventos aun. Inicia el mirror para ver warm-up y detecciones.</p>
+                }
+                else
+                {
+                    <div class="table-responsive" style="max-height: 280px; overflow:auto;">
+                        <table class="table table-sm mb-0">
+                            <thead>
                             <tr>
-                                <td class="text-nowrap">@ev.Utc.ToString("HH:mm:ss")</td>
-                                <td>@ev.Kind</td>
-                                <td class="text-nowrap">
-                                    @(ev.DetectDelayMs is null ? "—" : $"{ev.DetectDelayMs}ms")
-                                    @if (ev.ExecDelayMs is not null)
-                                    {
-                                        <span> / exec @ev.ExecDelayMs ms</span>
-                                    }
-                                </td>
-                                <td class="small">@ev.Message</td>
+                                <th>UTC</th>
+                                <th>Tipo</th>
+                                <th>Delay</th>
+                                <th>Detalle</th>
                             </tr>
-                        }
-                        </tbody>
-                    </table>
-                </div>
+                            </thead>
+                            <tbody>
+                            @foreach (var ev in st.RecentEvents)
+                            {
+                                <tr>
+                                    <td class="text-nowrap">@ev.Utc.ToString("HH:mm:ss")</td>
+                                    <td>@ev.Kind</td>
+                                    <td class="text-nowrap">
+                                        @(ev.DetectDelayMs is null ? "—" : $"{ev.DetectDelayMs}ms")
+                                        @if (ev.ExecDelayMs is not null)
+                                        {
+                                            <span> / exec @ev.ExecDelayMs ms</span>
+                                        }
+                                    </td>
+                                    <td class="small">@ev.Message</td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                }
             </div>
         </div>
     </div>
@@ -174,16 +199,22 @@
 
 <div class="alert alert-warning border-0 mb-0" role="status">
     Limite real: Binance no publica fills tick-a-tick. El delay minimo tipico es el del poll (~1–3s)
-    mas el refresco interno de su order-history. Endpoints no oficiales pueden rate-limitar o cambiar.
+    mas el refresco interno de su order-history. No pegues el ID acortado con “…”; usa el boton Usar.
 </div>
 
 @code {
     private readonly List<CopyLeadSummary> _leads = [];
     private CopyMirrorSettings _form = new() { DryRun = true, LongOnly = true, QuotePerTradeUsdt = 15m, PollIntervalMs = 2000 };
     private bool _loadingBoard;
+    private bool _starting;
     private string? _error;
+    private string? _info;
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _uiCts;
+
+    private bool CanStart =>
+        !string.IsNullOrWhiteSpace(_form.LeadPortfolioId) &&
+        _form.LeadPortfolioId.All(char.IsDigit);
 
     protected override async Task OnInitializedAsync()
     {
@@ -199,7 +230,7 @@
             PollIntervalMs = st.Settings.PollIntervalMs
         };
         _uiCts = new CancellationTokenSource();
-        _timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
         _ = RefreshLoopAsync(_uiCts.Token);
         await LoadLeaderboardAsync();
     }
@@ -242,40 +273,75 @@
         }
     }
 
+    private void OnPortfolioIdInput(ChangeEventArgs e)
+    {
+        var raw = e.Value?.ToString() ?? string.Empty;
+        _form.LeadPortfolioId = new string(raw.Where(char.IsDigit).ToArray());
+        if (!string.Equals(_form.LeadPortfolioId, raw, StringComparison.Ordinal))
+        {
+            _form.LeadNickname = string.Empty;
+        }
+    }
+
     private void SelectLead(CopyLeadSummary lead)
     {
         _form.LeadPortfolioId = lead.LeadPortfolioId;
         _form.LeadNickname = lead.Nickname;
+        _error = null;
+        _info = $"Lead listo: {lead.Nickname} ({ShortId(lead.LeadPortfolioId)}). Ahora pulsa Iniciar mirror.";
     }
 
     private bool Selected(CopyLeadSummary lead) =>
         string.Equals(_form.LeadPortfolioId, lead.LeadPortfolioId, StringComparison.Ordinal);
 
-    private Task StartAsync()
+    private async Task StartAsync()
     {
         _error = null;
-        if (string.IsNullOrWhiteSpace(_form.LeadPortfolioId))
+        _info = null;
+        if (!CanStart)
         {
-            _error = "Elige un lead o pega su portfolio ID.";
-            return Task.CompletedTask;
+            _error = "Elige un lead con Usar (ID numerico completo). No pegues el ID con puntos suspensivos.";
+            return;
         }
 
-        Mirror.UpdateSettings(new CopyMirrorSettings
+        _starting = true;
+        try
         {
-            Enabled = true,
-            DryRun = _form.DryRun,
-            LongOnly = _form.LongOnly,
-            LeadPortfolioId = _form.LeadPortfolioId.Trim(),
-            LeadNickname = _form.LeadNickname,
-            QuotePerTradeUsdt = _form.QuotePerTradeUsdt,
-            PollIntervalMs = _form.PollIntervalMs
-        });
-        return Task.CompletedTask;
+            Mirror.UpdateSettings(new CopyMirrorSettings
+            {
+                Enabled = true,
+                DryRun = _form.DryRun,
+                LongOnly = _form.LongOnly,
+                LeadPortfolioId = _form.LeadPortfolioId.Trim(),
+                LeadNickname = _form.LeadNickname,
+                QuotePerTradeUsdt = _form.QuotePerTradeUsdt,
+                PollIntervalMs = _form.PollIntervalMs
+            });
+
+            // Poll inmediato: no esperar al ciclo del hosted service.
+            using var scope = ScopeFactory.CreateScope();
+            await Mirror.PollOnceAsync(scope.ServiceProvider);
+
+            var st = Mirror.GetStatus();
+            _info = st.LastError is { Length: > 0 }
+                ? $"Mirror activo, pero el poll fallo: {st.LastError}"
+                : $"Mirror {(_form.DryRun ? "DRY-RUN" : "LIVE")} iniciado. Warm-up/eventos abajo. Activo={st.Settings.Enabled}, vistos={st.SeenOrders}.";
+        }
+        catch (Exception ex)
+        {
+            _error = $"No se pudo iniciar: {ex.Message}";
+        }
+        finally
+        {
+            _starting = false;
+        }
     }
 
     private Task StopAsync()
     {
         Mirror.Stop();
+        _info = "Mirror detenido.";
+        _error = null;
         return Task.CompletedTask;
     }
 

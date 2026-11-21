@@ -746,6 +746,34 @@ app.MapPost("/api/bots/{id:guid}/force-sell", async (Guid id, IBotService botSer
     };
 });
 
+app.MapGet("/api/copy-mirror/status", (TradingBots.App.Services.CopyMirror.ICopyMirrorService mirror) =>
+    Results.Ok(mirror.GetStatus()));
+
+app.MapPost("/api/copy-mirror/start", async (
+    TradingBots.App.Services.CopyMirror.CopyMirrorSettings request,
+    TradingBots.App.Services.CopyMirror.ICopyMirrorService mirror,
+    IServiceScopeFactory scopeFactory) =>
+{
+    if (string.IsNullOrWhiteSpace(request.LeadPortfolioId) ||
+        !request.LeadPortfolioId.Trim().All(char.IsDigit))
+    {
+        return Results.BadRequest(new { error = "LeadPortfolioId numerico requerido." });
+    }
+
+    request.Enabled = true;
+    request.LeadPortfolioId = request.LeadPortfolioId.Trim();
+    mirror.UpdateSettings(request);
+    using var scope = scopeFactory.CreateScope();
+    await mirror.PollOnceAsync(scope.ServiceProvider);
+    return Results.Ok(mirror.GetStatus());
+});
+
+app.MapPost("/api/copy-mirror/stop", (TradingBots.App.Services.CopyMirror.ICopyMirrorService mirror) =>
+{
+    mirror.Stop();
+    return Results.Ok(mirror.GetStatus());
+});
+
 app.MapGet("/api/market/overview", async (string? symbols, IBinanceMarketService marketService) =>
 {
     var list = (symbols ?? "BTCUSDT,ETHUSDT,SOLUSDT")
