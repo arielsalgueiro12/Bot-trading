@@ -103,7 +103,7 @@
                     </div>
                     <div class="col-6">
                         <label class="form-label small mb-1">Poll (ms)</label>
-                        <input class="form-control form-control-sm" type="number" min="1000" step="500" @bind="_form.PollIntervalMs" />
+                        <input class="form-control form-control-sm" type="number" min="2500" step="500" @bind="_form.PollIntervalMs" />
                     </div>
                 </div>
                 <div class="form-check">
@@ -144,6 +144,7 @@
                 <div><strong>Lead:</strong> @(string.IsNullOrWhiteSpace(st.Settings.LeadNickname) ? (string.IsNullOrWhiteSpace(st.Settings.LeadPortfolioId) ? "—" : ShortId(st.Settings.LeadPortfolioId)) : st.Settings.LeadNickname)</div>
                 <div><strong>Warm-up:</strong> @(st.WarmingUp ? "si" : "no")</div>
                 <div><strong>Ultimo poll:</strong> @(st.LastPollUtc?.ToString("HH:mm:ss") ?? "—") (@st.LastPollMs ms)</div>
+                <div><strong>Delay poll:</strong> @st.RecommendedDelayMs ms @(st.FailStreak > 0 ? $"(backoff fail={st.FailStreak})" : "")</div>
                 <div><strong>Vistos / buy / sell / skip:</strong> @st.SeenOrders / @st.MirroredBuys / @st.MirroredSells / @st.Skipped</div>
                 @if (st.OpenSpotQty.Count > 0)
                 {
@@ -268,7 +269,7 @@
 
 @code {
     private readonly List<CopyLeadSummary> _leads = [];
-    private CopyMirrorSettings _form = new() { DryRun = true, LongOnly = true, QuotePerTradeUsdt = 15m, PollIntervalMs = 2000 };
+    private CopyMirrorSettings _form = new() { DryRun = true, LongOnly = true, QuotePerTradeUsdt = 15m, PollIntervalMs = 3500 };
     private bool _loadingBoard;
     private bool _starting;
     private string? _error;
@@ -382,14 +383,29 @@
                 PollIntervalMs = _form.PollIntervalMs
             });
 
-            // Poll inmediato: no esperar al ciclo del hosted service.
+            // Poll inmediato (si Binance esta busy, el hosted service reintenta con backoff).
             using var scope = ScopeFactory.CreateScope();
             await Mirror.PollOnceAsync(scope.ServiceProvider);
 
             var st = Mirror.GetStatus();
-            _info = st.LastError is { Length: > 0 }
-                ? $"Mirror activo, pero el poll fallo: {st.LastError}"
-                : $"Mirror {(_form.DryRun ? "DRY-RUN" : "LIVE")} iniciado. Warm-up/eventos abajo. Activo={st.Settings.Enabled}, vistos={st.SeenOrders}.";
+            var busy = st.LastError.Contains("busy", StringComparison.OrdinalIgnoreCase) ||
+                       st.LastError.Contains("try again", StringComparison.OrdinalIgnoreCase);
+            if (busy)
+            {
+                _info =
+                    $"Mirror {(_form.DryRun ? "DRY-RUN" : "LIVE")} activo. Binance order-history esta ocupado (rate-limit); " +
+                    $"reintenta solo cada ~{st.RecommendedDelayMs}ms. No es por desmarcar dry-run.";
+            }
+            else if (st.LastError is { Length: > 0 })
+            {
+                _info = $"Mirror activo, pero el poll fallo: {st.LastError}";
+            }
+            else
+            {
+                _info =
+                    $"Mirror {(_form.DryRun ? "DRY-RUN" : "LIVE")} iniciado. Warm-up/eventos abajo. " +
+                    $"Activo={st.Settings.Enabled}, vistos={st.SeenOrders}.";
+            }
         }
         catch (Exception ex)
         {

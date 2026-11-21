@@ -35,7 +35,8 @@ public sealed class CopyMirrorSettings
     public string LeadPortfolioId { get; set; } = string.Empty;
     public string LeadNickname { get; set; } = string.Empty;
     public decimal QuotePerTradeUsdt { get; set; } = 15m;
-    public int PollIntervalMs { get; set; } = 2000;
+    /// <summary>Minimo recomendado 3s: el order-history publico de Binance rate-limita fuerte.</summary>
+    public int PollIntervalMs { get; set; } = 3500;
 }
 
 public sealed class CopyMirrorEvent
@@ -71,6 +72,8 @@ public sealed class CopyMirrorStatus
     public int MirroredSells { get; init; }
     public int Skipped { get; init; }
     public int LastPollMs { get; init; }
+    public int FailStreak { get; init; }
+    public int RecommendedDelayMs { get; init; }
     public IReadOnlyList<CopyMirrorEvent> RecentEvents { get; init; } = [];
     /// <summary>Solo compras/ventas/skips del mirror (mas legible que el log completo).</summary>
     public IReadOnlyList<CopyMirrorEvent> RecentMovements { get; init; } = [];

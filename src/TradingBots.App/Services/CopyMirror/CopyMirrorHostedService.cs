@@ -10,23 +10,16 @@ public sealed class CopyMirrorHostedService(
         logger.LogInformation("CopyMirror hosted service started.");
         while (!stoppingToken.IsCancellationRequested)
         {
-            var status = mirrorService.GetStatus();
-            var delayMs = status.Settings.Enabled
-                ? Math.Clamp(status.Settings.PollIntervalMs, 1000, 30_000)
-                : 3000;
-
-            // Backoff suave si el poll falla seguido (rate-limit / busy).
-            if (!string.IsNullOrWhiteSpace(status.LastError) && status.Settings.Enabled)
-            {
-                delayMs = Math.Min(15_000, delayMs + 1500);
-            }
+            var delayMs = mirrorService.GetRecommendedDelayMs();
 
             try
             {
+                var status = mirrorService.GetStatus();
                 if (status.Settings.Enabled)
                 {
                     using var scope = scopeFactory.CreateScope();
                     await mirrorService.PollOnceAsync(scope.ServiceProvider, stoppingToken);
+                    delayMs = mirrorService.GetRecommendedDelayMs();
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -36,6 +29,7 @@ public sealed class CopyMirrorHostedService(
             catch (Exception ex)
             {
                 logger.LogError(ex, "CopyMirror cycle error");
+                delayMs = Math.Min(45_000, Math.Max(delayMs, 8_000));
             }
 
             try

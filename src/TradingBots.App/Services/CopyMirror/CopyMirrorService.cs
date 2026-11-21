@@ -7,6 +7,7 @@ public interface ICopyMirrorService
     CopyMirrorStatus GetStatus();
     void UpdateSettings(CopyMirrorSettings settings);
     void Stop();
+    int GetRecommendedDelayMs();
     Task<IReadOnlyList<CopyLeadSummary>> GetLeaderboardAsync(CancellationToken ct = default);
     Task PollOnceAsync(IServiceProvider scopedServices, CancellationToken ct = default);
 }
@@ -46,6 +47,8 @@ public sealed class CopyMirrorService(
                 MirroredSells = _mirroredSells,
                 Skipped = _skipped,
                 LastPollMs = _lastPollMs,
+                FailStreak = _failStreak,
+                RecommendedDelayMs = ComputeRecommendedDelayMsUnlocked(),
                 RecentEvents = _events.Reverse().Take(60).ToList(),
                 RecentMovements = _events
                     .Reverse()
@@ -54,6 +57,14 @@ public sealed class CopyMirrorService(
                     .ToList(),
                 OpenSpotQty = new Dictionary<string, decimal>(_openQty, StringComparer.OrdinalIgnoreCase)
             };
+        }
+    }
+
+    public int GetRecommendedDelayMs()
+    {
+        lock (_gate)
+        {
+            return ComputeRecommendedDelayMsUnlocked();
         }
     }
 
@@ -163,12 +174,46 @@ public sealed class CopyMirrorService(
                 streak = _failStreak;
             }
 
-            logger.LogWarning(ex, "Copy mirror poll failed (streak={Streak})", streak);
-            if (streak <= 3 || streak % 10 == 0)
+            var busy = IsBinanceBusy(ex.Message);
+            logger.LogWarning(ex, "Copy mirror poll failed (streak={Streak}, busy={Busy})", streak, busy);
+            // Binance "busy"/rate-limit: no spamear el log; el hosted service sube el delay.
+            if (!busy && (streak <= 2 || streak % 10 == 0))
             {
                 PushEvent("error", $"Poll fail: {ex.Message}");
             }
+            else if (busy && (streak == 1 || streak % 5 == 0))
+            {
+                PushEvent("error",
+                    $"Binance order-history ocupado/rate-limit (intento {streak}). Reintentando mas lento; no es por dry-run/LIVE.");
+            }
         }
+    }
+
+    private int ComputeRecommendedDelayMsUnlocked()
+    {
+        var baseMs = Math.Clamp(_settings.PollIntervalMs <= 0 ? 3500 : _settings.PollIntervalMs, 2500, 30_000);
+        if (!_settings.Enabled || _failStreak <= 0)
+        {
+            return _settings.Enabled ? baseMs : 3000;
+        }
+
+        // Backoff exponencial suave ante busy/rate-limit (hasta 45s).
+        var extra = Math.Min(40_000, (int)(1500 * Math.Pow(1.65, Math.Min(_failStreak, 10))));
+        return Math.Min(45_000, baseMs + extra);
+    }
+
+    private static bool IsBinanceBusy(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        return message.Contains("busy", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("try again later", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("rate", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("429", StringComparison.OrdinalIgnoreCase) ||
+               message.Contains("418", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task HandleNewOrderAsync(
@@ -334,7 +379,7 @@ public sealed class CopyMirrorService(
         LeadPortfolioId = (s.LeadPortfolioId ?? string.Empty).Trim(),
         LeadNickname = (s.LeadNickname ?? string.Empty).Trim(),
         QuotePerTradeUsdt = Math.Clamp(s.QuotePerTradeUsdt <= 0 ? 15m : s.QuotePerTradeUsdt, 5m, 5000m),
-        PollIntervalMs = Math.Clamp(s.PollIntervalMs <= 0 ? 2000 : s.PollIntervalMs, 1000, 30_000)
+        PollIntervalMs = Math.Clamp(s.PollIntervalMs <= 0 ? 3500 : s.PollIntervalMs, 2500, 30_000)
     };
 
     private static CopyMirrorSettings CloneSettings(CopyMirrorSettings s) => new()
