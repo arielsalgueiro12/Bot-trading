@@ -235,20 +235,25 @@ public sealed class CopyMirrorService(
             order.Symbol, leadAction, "lead", order.ExecutedQty, order.AvgPrice, null,
             order.OrderTimeMs, detectDelayMs);
 
-        if (settings.LongOnly &&
-            !string.Equals(order.PositionSide, "LONG", StringComparison.OrdinalIgnoreCase))
+        // Binance a veces manda LONG/SHORT; muchos leads usan BOTH (one-way).
+        // Spot mirror: BUY+LONG/BOTH => compra; SELL+LONG/BOTH => venta; SHORT se ignora si LongOnly.
+        var pos = order.PositionSide ?? string.Empty;
+        var isShort = pos.Equals("SHORT", StringComparison.OrdinalIgnoreCase);
+        var isLongLike = pos.Equals("LONG", StringComparison.OrdinalIgnoreCase) ||
+                         pos.Equals("BOTH", StringComparison.OrdinalIgnoreCase) ||
+                         string.IsNullOrWhiteSpace(pos);
+
+        if (settings.LongOnly && isShort)
         {
             Interlocked.Increment(ref _skipped);
-            PushEvent("skipped", $"SKIP (short/no-LONG): {order.Symbol} {order.Side}/{order.PositionSide}",
+            PushEvent("skipped", $"SKIP SHORT: {order.Symbol} {order.Side}/{order.PositionSide}",
                 order.Symbol, "SKIP", "lead", order.ExecutedQty, order.AvgPrice, null,
                 order.OrderTimeMs, detectDelayMs);
             return;
         }
 
-        var isBuy = string.Equals(order.Side, "BUY", StringComparison.OrdinalIgnoreCase)
-                    && string.Equals(order.PositionSide, "LONG", StringComparison.OrdinalIgnoreCase);
-        var isSell = string.Equals(order.Side, "SELL", StringComparison.OrdinalIgnoreCase)
-                     && string.Equals(order.PositionSide, "LONG", StringComparison.OrdinalIgnoreCase);
+        var isBuy = order.Side.Equals("BUY", StringComparison.OrdinalIgnoreCase) && isLongLike;
+        var isSell = order.Side.Equals("SELL", StringComparison.OrdinalIgnoreCase) && isLongLike;
 
         if (!isBuy && !isSell)
         {
