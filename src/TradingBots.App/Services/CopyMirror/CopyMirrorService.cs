@@ -46,7 +46,12 @@ public sealed class CopyMirrorService(
                 MirroredSells = _mirroredSells,
                 Skipped = _skipped,
                 LastPollMs = _lastPollMs,
-                RecentEvents = _events.Reverse().Take(40).ToList(),
+                RecentEvents = _events.Reverse().Take(60).ToList(),
+                RecentMovements = _events
+                    .Reverse()
+                    .Where(e => e.IsMovement && e.Action is "BUY" or "SELL" or "SKIP")
+                    .Take(50)
+                    .ToList(),
                 OpenSpotQty = new Dictionary<string, decimal>(_openQty, StringComparer.OrdinalIgnoreCase)
             };
         }
@@ -177,16 +182,21 @@ public sealed class CopyMirrorService(
             ? (int)Math.Max(0, (detectUtc - DateTimeOffset.FromUnixTimeMilliseconds(order.OrderTimeMs).UtcDateTime).TotalMilliseconds)
             : (int?)null;
 
+        var leadAction = string.Equals(order.Side, "BUY", StringComparison.OrdinalIgnoreCase) ? "BUY"
+            : string.Equals(order.Side, "SELL", StringComparison.OrdinalIgnoreCase) ? "SELL"
+            : order.Side;
         PushEvent("detected",
-            $"Lead {order.Side} {order.PositionSide} {order.Symbol} qty={Fmt(order.ExecutedQty)} @ {Fmt(order.AvgPrice)}",
-            order.Symbol, order.OrderTimeMs, detectDelayMs);
+            $"LEAD {leadAction} {order.PositionSide} {order.Symbol} qty={Fmt(order.ExecutedQty)} @ {Fmt(order.AvgPrice)}",
+            order.Symbol, leadAction, "lead", order.ExecutedQty, order.AvgPrice, null,
+            order.OrderTimeMs, detectDelayMs);
 
         if (settings.LongOnly &&
             !string.Equals(order.PositionSide, "LONG", StringComparison.OrdinalIgnoreCase))
         {
             Interlocked.Increment(ref _skipped);
-            PushEvent("skipped", $"Skip SHORT/no-LONG: {order.Symbol} {order.Side}/{order.PositionSide}",
-                order.Symbol, order.OrderTimeMs, detectDelayMs);
+            PushEvent("skipped", $"SKIP (short/no-LONG): {order.Symbol} {order.Side}/{order.PositionSide}",
+                order.Symbol, "SKIP", "lead", order.ExecutedQty, order.AvgPrice, null,
+                order.OrderTimeMs, detectDelayMs);
             return;
         }
 
@@ -198,8 +208,9 @@ public sealed class CopyMirrorService(
         if (!isBuy && !isSell)
         {
             Interlocked.Increment(ref _skipped);
-            PushEvent("skipped", $"Skip lado no mapeable: {order.Side}/{order.PositionSide}",
-                order.Symbol, order.OrderTimeMs, detectDelayMs);
+            PushEvent("skipped", $"SKIP lado no mapeable: {order.Side}/{order.PositionSide}",
+                order.Symbol, "SKIP", "lead", null, null, null,
+                order.OrderTimeMs, detectDelayMs);
             return;
         }
 
@@ -209,15 +220,17 @@ public sealed class CopyMirrorService(
             {
                 Interlocked.Increment(ref _mirroredBuys);
                 PushEvent("dryrun",
-                    $"DRY BUY {order.Symbol} ~{Fmt(settings.QuotePerTradeUsdt)} USDT (detectDelay={detectDelayMs}ms)",
-                    order.Symbol, order.OrderTimeMs, detectDelayMs);
+                    $"COMPRA (dry-run) {order.Symbol} ~{Fmt(settings.QuotePerTradeUsdt)} USDT",
+                    order.Symbol, "BUY", "dryrun", null, order.AvgPrice, settings.QuotePerTradeUsdt,
+                    order.OrderTimeMs, detectDelayMs);
             }
             else
             {
                 Interlocked.Increment(ref _mirroredSells);
                 PushEvent("dryrun",
-                    $"DRY SELL {order.Symbol} (cerrar posicion mirror si hubiera)",
-                    order.Symbol, order.OrderTimeMs, detectDelayMs);
+                    $"VENTA (dry-run) {order.Symbol} — cerraria posicion mirror si hubiera",
+                    order.Symbol, "SELL", "dryrun", null, order.AvgPrice, null,
+                    order.OrderTimeMs, detectDelayMs);
             }
 
             return;
@@ -234,16 +247,18 @@ public sealed class CopyMirrorService(
             {
                 Interlocked.Increment(ref _skipped);
                 PushEvent("error",
-                    $"BUY fail {order.Symbol}: {execution.GetLastExecutionError()}",
-                    order.Symbol, order.OrderTimeMs, detectDelayMs, execDelay);
+                    $"COMPRA FALLIDA {order.Symbol}: {execution.GetLastExecutionError()}",
+                    order.Symbol, "BUY", "live", null, null, settings.QuotePerTradeUsdt,
+                    order.OrderTimeMs, detectDelayMs, execDelay);
                 return;
             }
 
             _openQty.AddOrUpdate(order.Symbol, fill.ExecutedQuantity, (_, cur) => cur + fill.ExecutedQuantity);
             Interlocked.Increment(ref _mirroredBuys);
             PushEvent("executed",
-                $"BUY {order.Symbol} qty={Fmt(fill.ExecutedQuantity)} @ {Fmt(fill.AveragePrice)} (detect={detectDelayMs}ms exec={execDelay}ms)",
-                order.Symbol, order.OrderTimeMs, detectDelayMs, execDelay);
+                $"COMPRA {order.Symbol} qty={Fmt(fill.ExecutedQuantity)} @ {Fmt(fill.AveragePrice)}",
+                order.Symbol, "BUY", "live", fill.ExecutedQuantity, fill.AveragePrice, settings.QuotePerTradeUsdt,
+                order.OrderTimeMs, detectDelayMs, execDelay);
             return;
         }
 
@@ -251,8 +266,9 @@ public sealed class CopyMirrorService(
         {
             Interlocked.Increment(ref _skipped);
             PushEvent("skipped",
-                $"SELL sin posicion mirror abierta en {order.Symbol}",
-                order.Symbol, order.OrderTimeMs, detectDelayMs);
+                $"SKIP VENTA: sin posicion mirror abierta en {order.Symbol}",
+                order.Symbol, "SKIP", "live", null, null, null,
+                order.OrderTimeMs, detectDelayMs);
             return;
         }
 
@@ -262,22 +278,29 @@ public sealed class CopyMirrorService(
         {
             Interlocked.Increment(ref _skipped);
             PushEvent("error",
-                $"SELL fail {order.Symbol}: {execution.GetLastExecutionError()}",
-                order.Symbol, order.OrderTimeMs, detectDelayMs, sellExecDelay);
+                $"VENTA FALLIDA {order.Symbol}: {execution.GetLastExecutionError()}",
+                order.Symbol, "SELL", "live", qty, null, null,
+                order.OrderTimeMs, detectDelayMs, sellExecDelay);
             return;
         }
 
         _openQty.TryRemove(order.Symbol, out _);
         Interlocked.Increment(ref _mirroredSells);
         PushEvent("executed",
-            $"SELL {order.Symbol} qty={Fmt(sellFill.ExecutedQuantity)} @ {Fmt(sellFill.AveragePrice)} (detect={detectDelayMs}ms exec={sellExecDelay}ms)",
-            order.Symbol, order.OrderTimeMs, detectDelayMs, sellExecDelay);
+            $"VENTA {order.Symbol} qty={Fmt(sellFill.ExecutedQuantity)} @ {Fmt(sellFill.AveragePrice)}",
+            order.Symbol, "SELL", "live", sellFill.ExecutedQuantity, sellFill.AveragePrice, null,
+            order.OrderTimeMs, detectDelayMs, sellExecDelay);
     }
 
     private void PushEvent(
         string kind,
         string message,
         string? symbol = null,
+        string? action = null,
+        string? mode = null,
+        decimal? qty = null,
+        decimal? price = null,
+        decimal? quoteUsdt = null,
         long? leadOrderTimeMs = null,
         int? detectDelayMs = null,
         int? execDelayMs = null)
@@ -288,12 +311,17 @@ public sealed class CopyMirrorService(
             Kind = kind,
             Message = message,
             Symbol = symbol,
+            Action = action,
+            Mode = mode,
+            Qty = qty,
+            Price = price,
+            QuoteUsdt = quoteUsdt,
             LeadOrderTimeMs = leadOrderTimeMs,
             DetectDelayMs = detectDelayMs,
             ExecDelayMs = execDelayMs
         });
 
-        while (_events.Count > 80 && _events.TryDequeue(out _))
+        while (_events.Count > 200 && _events.TryDequeue(out _))
         {
         }
     }

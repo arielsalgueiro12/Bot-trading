@@ -44,9 +44,19 @@ public sealed class CopyMirrorEvent
     public string Kind { get; init; } = "info";
     public string Message { get; init; } = string.Empty;
     public string? Symbol { get; init; }
+    /// <summary>BUY / SELL / SKIP / INFO</summary>
+    public string? Action { get; init; }
+    /// <summary>dryrun / live / lead / none</summary>
+    public string? Mode { get; init; }
+    public decimal? Qty { get; init; }
+    public decimal? Price { get; init; }
+    public decimal? QuoteUsdt { get; init; }
     public long? LeadOrderTimeMs { get; init; }
     public int? DetectDelayMs { get; init; }
     public int? ExecDelayMs { get; init; }
+
+    public bool IsMovement =>
+        Kind is "dryrun" or "executed" or "detected" or "skipped" or "error";
 }
 
 public sealed class CopyMirrorStatus
@@ -62,6 +72,8 @@ public sealed class CopyMirrorStatus
     public int Skipped { get; init; }
     public int LastPollMs { get; init; }
     public IReadOnlyList<CopyMirrorEvent> RecentEvents { get; init; } = [];
+    /// <summary>Solo compras/ventas/skips del mirror (mas legible que el log completo).</summary>
+    public IReadOnlyList<CopyMirrorEvent> RecentMovements { get; init; } = [];
     public IReadOnlyDictionary<string, decimal> OpenSpotQty { get; init; } =
         new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
 }

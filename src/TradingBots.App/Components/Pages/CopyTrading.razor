@@ -145,6 +145,15 @@
                 <div><strong>Warm-up:</strong> @(st.WarmingUp ? "si" : "no")</div>
                 <div><strong>Ultimo poll:</strong> @(st.LastPollUtc?.ToString("HH:mm:ss") ?? "—") (@st.LastPollMs ms)</div>
                 <div><strong>Vistos / buy / sell / skip:</strong> @st.SeenOrders / @st.MirroredBuys / @st.MirroredSells / @st.Skipped</div>
+                @if (st.OpenSpotQty.Count > 0)
+                {
+                    <div class="mt-2"><strong>Posicion mirror:</strong>
+                        @foreach (var kv in st.OpenSpotQty)
+                        {
+                            <div>@kv.Key: @kv.Value.ToString("0.######")</div>
+                        }
+                    </div>
+                }
                 @if (!string.IsNullOrWhiteSpace(st.LastError))
                 {
                     <div class="text-danger mt-2">@st.LastError</div>
@@ -154,38 +163,64 @@
     </div>
     <div class="col-md-8">
         <div class="card h-100">
-            <div class="card-header">Eventos (delay detectado vs orden del lead)</div>
+            <div class="card-header">Movimientos (compra / venta)</div>
             <div class="card-body p-0">
-                @if (st.RecentEvents.Count == 0)
+                @if (st.RecentMovements.Count == 0)
                 {
-                    <p class="text-muted small p-3 mb-0">Sin eventos aun. Inicia el mirror para ver warm-up y detecciones.</p>
+                    <p class="text-muted small p-3 mb-0">
+                        Aun no hay compras/ventas. Con el mirror activo apareceran aqui cuando el lead opere
+                        (en dry-run: COMPRA/VENTA simuladas; en LIVE: ejecutadas en Spot).
+                    </p>
                 }
                 else
                 {
-                    <div class="table-responsive" style="max-height: 280px; overflow:auto;">
-                        <table class="table table-sm mb-0">
+                    <div class="table-responsive" style="max-height: 320px; overflow:auto;">
+                        <table class="table table-sm mb-0 align-middle">
                             <thead>
                             <tr>
                                 <th>UTC</th>
-                                <th>Tipo</th>
-                                <th>Delay</th>
+                                <th>Accion</th>
+                                <th>Modo</th>
+                                <th>Symbol</th>
+                                <th class="text-end">Qty / USDT</th>
+                                <th class="text-end">Precio</th>
+                                <th class="text-end">Delay</th>
                                 <th>Detalle</th>
                             </tr>
                             </thead>
                             <tbody>
-                            @foreach (var ev in st.RecentEvents)
+                            @foreach (var mv in st.RecentMovements)
                             {
                                 <tr>
-                                    <td class="text-nowrap">@ev.Utc.ToString("HH:mm:ss")</td>
-                                    <td>@ev.Kind</td>
-                                    <td class="text-nowrap">
-                                        @(ev.DetectDelayMs is null ? "—" : $"{ev.DetectDelayMs}ms")
-                                        @if (ev.ExecDelayMs is not null)
+                                    <td class="text-nowrap">@mv.Utc.ToString("HH:mm:ss")</td>
+                                    <td>
+                                        <span class="badge @(ActionBadgeClass(mv.Action))">@(mv.Action ?? mv.Kind)</span>
+                                    </td>
+                                    <td class="small">@(mv.Mode ?? mv.Kind)</td>
+                                    <td>@(mv.Symbol ?? "—")</td>
+                                    <td class="text-end text-nowrap">
+                                        @if (mv.QuoteUsdt is not null)
                                         {
-                                            <span> / exec @ev.ExecDelayMs ms</span>
+                                            <span>~@mv.QuoteUsdt.Value.ToString("0.##") USDT</span>
+                                        }
+                                        else if (mv.Qty is not null)
+                                        {
+                                            <span>@mv.Qty.Value.ToString("0.######")</span>
+                                        }
+                                        else
+                                        {
+                                            <span>—</span>
                                         }
                                     </td>
-                                    <td class="small">@ev.Message</td>
+                                    <td class="text-end">@(mv.Price?.ToString("0.####") ?? "—")</td>
+                                    <td class="text-end text-nowrap">
+                                        @(mv.DetectDelayMs is null ? "—" : $"{mv.DetectDelayMs}ms")
+                                        @if (mv.ExecDelayMs is not null)
+                                        {
+                                            <span> / @mv.ExecDelayMs ms</span>
+                                        }
+                                    </td>
+                                    <td class="small">@mv.Message</td>
                                 </tr>
                             }
                             </tbody>
@@ -196,6 +231,35 @@
         </div>
     </div>
 </div>
+
+<details class="mb-4">
+    <summary class="text-muted small">Log tecnico completo</summary>
+    <div class="card mt-2">
+        <div class="card-body p-0">
+            <div class="table-responsive" style="max-height: 220px; overflow:auto;">
+                <table class="table table-sm mb-0">
+                    <thead>
+                    <tr>
+                        <th>UTC</th>
+                        <th>Tipo</th>
+                        <th>Detalle</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var ev in st.RecentEvents)
+                    {
+                        <tr>
+                            <td class="text-nowrap">@ev.Utc.ToString("HH:mm:ss")</td>
+                            <td>@ev.Kind</td>
+                            <td class="small">@ev.Message</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</details>
 
 <div class="alert alert-warning border-0 mb-0" role="status">
     Limite real: Binance no publica fills tick-a-tick. El delay minimo tipico es el del poll (~1–3s)
@@ -347,6 +411,14 @@
 
     private static string ShortId(string id) =>
         string.IsNullOrEmpty(id) ? "" : (id.Length <= 10 ? id : id[..6] + "…" + id[^4..]);
+
+    private static string ActionBadgeClass(string? action) => action switch
+    {
+        "BUY" => "text-bg-success",
+        "SELL" => "text-bg-danger",
+        "SKIP" => "text-bg-secondary",
+        _ => "text-bg-dark"
+    };
 
     public async ValueTask DisposeAsync()
     {
