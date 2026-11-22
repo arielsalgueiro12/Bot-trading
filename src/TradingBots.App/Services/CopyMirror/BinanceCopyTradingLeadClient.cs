@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net.Http.Headers;
@@ -12,12 +13,15 @@ public interface IBinanceCopyTradingLeadClient
         string timeRange = "30D",
         string dataType = "ROI",
         int pageSize = 20,
+        int pageNumber = 1,
         CancellationToken ct = default);
 
     Task<(IReadOnlyList<CopyLeadOrder> Orders, int ElapsedMs)> GetOrderHistoryAsync(
         string portfolioId,
         int pageSize = 30,
         CancellationToken ct = default);
+
+    Task<bool> IsSpotSymbolAsync(string symbol, CancellationToken ct = default);
 }
 
 public sealed class BinanceCopyTradingLeadClient(HttpClient httpClient, ILogger<BinanceCopyTradingLeadClient> logger)
@@ -25,17 +29,20 @@ public sealed class BinanceCopyTradingLeadClient(HttpClient httpClient, ILogger<
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private const string Base = "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade";
+    private const string SpotExchangeInfo = "https://api.binance.com/api/v3/exchangeInfo";
+    private readonly ConcurrentDictionary<string, bool> _spotSymbolCache = new(StringComparer.OrdinalIgnoreCase);
 
     public async Task<IReadOnlyList<CopyLeadSummary>> GetLeaderboardAsync(
         string timeRange = "30D",
         string dataType = "ROI",
         int pageSize = 20,
+        int pageNumber = 1,
         CancellationToken ct = default)
     {
         EnsureBrowserHeaders();
         var payload = new
         {
-            pageNumber = 1,
+            pageNumber = Math.Max(1, pageNumber),
             pageSize = Math.Clamp(pageSize, 1, 30),
             timeRange,
             dataType,
@@ -157,6 +164,34 @@ public sealed class BinanceCopyTradingLeadClient(HttpClient httpClient, ILogger<
         }
 
         return (orders, (int)sw.ElapsedMilliseconds);
+    }
+
+    public async Task<bool> IsSpotSymbolAsync(string symbol, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return false;
+        }
+
+        var key = symbol.Trim().ToUpperInvariant();
+        if (_spotSymbolCache.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        try
+        {
+            using var response = await httpClient.GetAsync($"{SpotExchangeInfo}?symbol={key}", ct);
+            var ok = response.IsSuccessStatusCode;
+            _spotSymbolCache[key] = ok;
+            return ok;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Spot symbol check failed for {Symbol}", key);
+            _spotSymbolCache[key] = false;
+            return false;
+        }
     }
 
     private void EnsureBrowserHeaders()

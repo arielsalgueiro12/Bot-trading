@@ -9,6 +9,7 @@ public interface ICopyMirrorService
     void Stop();
     int GetRecommendedDelayMs();
     Task<IReadOnlyList<CopyLeadSummary>> GetLeaderboardAsync(CancellationToken ct = default);
+    Task<CopyLeadBoardResult> GetSpotCompatibleLeaderboardAsync(CancellationToken ct = default);
     Task PollOnceAsync(IServiceProvider scopedServices, CancellationToken ct = default);
 }
 
@@ -30,6 +31,9 @@ public sealed class CopyMirrorService(
     private int _mirroredSells;
     private int _skipped;
     private int _failStreak;
+    private CopyLeadBoardResult? _spotBoardCache;
+    private DateTime _spotBoardCacheUtc = DateTime.MinValue;
+    private static readonly TimeSpan SpotBoardCacheTtl = TimeSpan.FromMinutes(12);
 
     public CopyMirrorStatus GetStatus()
     {
@@ -103,6 +107,125 @@ public sealed class CopyMirrorService(
 
     public Task<IReadOnlyList<CopyLeadSummary>> GetLeaderboardAsync(CancellationToken ct = default) =>
         leadClient.GetLeaderboardAsync(ct: ct);
+
+    public async Task<CopyLeadBoardResult> GetSpotCompatibleLeaderboardAsync(CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            if (_spotBoardCache is not null && DateTime.UtcNow - _spotBoardCacheUtc < SpotBoardCacheTtl)
+            {
+                return _spotBoardCache;
+            }
+        }
+
+        // El ranking publico de Binance Copy es Futures; filtramos leads cuyas ordenes recientes
+        // solo usan simbolos que existen en Spot mainnet (evita EVAA/SKYAI/PIEVERSE, etc.).
+        var scanned = new List<CopyLeadSummary>();
+        for (var page = 1; page <= 3; page++)
+        {
+            var pageLeads = await leadClient.GetLeaderboardAsync(pageNumber: page, pageSize: 20, ct: ct);
+            if (pageLeads.Count == 0)
+            {
+                break;
+            }
+
+            scanned.AddRange(pageLeads);
+            if (scanned.Count >= 50)
+            {
+                break;
+            }
+        }
+
+        var compatible = new List<CopyLeadSummary>();
+        foreach (var lead in scanned)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                await Task.Delay(350, ct); // pacing anti rate-limit Binance
+                var (orders, _) = await leadClient.GetOrderHistoryAsync(lead.LeadPortfolioId, pageSize: 20, ct);
+                if (orders.Count == 0)
+                {
+                    continue;
+                }
+
+                var symbols = orders
+                    .Select(o => o.Symbol)
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                var spot = 0;
+                var futOnly = 0;
+                var spotNames = new List<string>();
+                foreach (var sym in symbols)
+                {
+                    if (await leadClient.IsSpotSymbolAsync(sym, ct))
+                    {
+                        spot++;
+                        if (spotNames.Count < 5)
+                        {
+                            spotNames.Add(sym);
+                        }
+                    }
+                    else
+                    {
+                        futOnly++;
+                    }
+                }
+
+                // Estricto: sin simbolos Futures-only y al menos 1 Spot.
+                if (spot <= 0 || futOnly > 0)
+                {
+                    continue;
+                }
+
+                compatible.Add(new CopyLeadSummary
+                {
+                    LeadPortfolioId = lead.LeadPortfolioId,
+                    Nickname = lead.Nickname,
+                    Roi = lead.Roi,
+                    Pnl = lead.Pnl,
+                    Aum = lead.Aum,
+                    Mdd = lead.Mdd,
+                    WinRate = lead.WinRate,
+                    CurrentCopyCount = lead.CurrentCopyCount,
+                    MaxCopyCount = lead.MaxCopyCount,
+                    SpotCompatible = true,
+                    SpotSymbolCount = spot,
+                    FuturesOnlySymbolCount = futOnly,
+                    SpotSymbolsSample = string.Join(", ", spotNames)
+                });
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Spot filter skip for lead {Lead}", lead.LeadPortfolioId);
+            }
+        }
+
+        var result = new CopyLeadBoardResult
+        {
+            Leads = compatible,
+            Scanned = scanned.Count,
+            SpotCompatibleCount = compatible.Count,
+            Note = compatible.Count == 0
+                ? "Ningun lead del ranking Copy publico paso el filtro Spot estricto (muchos operan solo Futures)."
+                : $"Mostrando {compatible.Count} leads Spot-compatible de {scanned.Count} revisados (ordenes recientes 100% Spot).",
+            GeneratedAtUtc = DateTime.UtcNow
+        };
+
+        lock (_gate)
+        {
+            _spotBoardCache = result;
+            _spotBoardCacheUtc = DateTime.UtcNow;
+        }
+
+        return result;
+    }
 
     public async Task PollOnceAsync(IServiceProvider scopedServices, CancellationToken ct = default)
     {

@@ -11,6 +11,20 @@ public sealed class CopyLeadSummary
     public decimal WinRate { get; init; }
     public int CurrentCopyCount { get; init; }
     public int MaxCopyCount { get; init; }
+    /// <summary>True si las ordenes recientes del lead cotizan en Spot mainnet.</summary>
+    public bool SpotCompatible { get; init; }
+    public int SpotSymbolCount { get; init; }
+    public int FuturesOnlySymbolCount { get; init; }
+    public string SpotSymbolsSample { get; init; } = string.Empty;
+}
+
+public sealed class CopyLeadBoardResult
+{
+    public IReadOnlyList<CopyLeadSummary> Leads { get; init; } = [];
+    public int Scanned { get; init; }
+    public int SpotCompatibleCount { get; init; }
+    public string Note { get; init; } = string.Empty;
+    public DateTime GeneratedAtUtc { get; init; } = DateTime.UtcNow;
 }
 
 public sealed class CopyLeadOrder

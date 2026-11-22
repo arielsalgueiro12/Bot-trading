@@ -24,16 +24,24 @@
 <div class="row g-3 mb-4">
     <div class="col-lg-7">
         <div class="card h-100">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <span>Mejores leads (ROI 30D)</span>
+            <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                <span>Leads Spot-compatible (filtro)</span>
                 <button class="btn btn-sm btn-outline-light" type="button" @onclick="LoadLeaderboardAsync" disabled="@_loadingBoard">
-                    @(_loadingBoard ? "Cargando..." : "Actualizar ranking")
+                    @(_loadingBoard ? "Filtrando..." : "Actualizar ranking Spot")
                 </button>
             </div>
             <div class="card-body p-0">
+                @if (!string.IsNullOrWhiteSpace(_boardNote))
+                {
+                    <p class="small text-muted px-3 pt-3 mb-0">@_boardNote</p>
+                }
                 @if (_leads.Count == 0)
                 {
-                    <p class="text-muted small p-3 mb-0">Pulsa actualizar para cargar el ranking público.</p>
+                    <p class="text-muted small p-3 mb-0">
+                        @(_loadingBoard
+                            ? "Revisando historial de leads y simbolos Spot (puede tardar ~30–60s)..."
+                            : "Pulsa actualizar para cargar solo leads cuyas ordenes recientes cotizan en Spot.")
+                    </p>
                 }
                 else
                 {
@@ -42,6 +50,7 @@
                             <thead>
                             <tr>
                                 <th>Lead</th>
+                                <th>Simbolos Spot</th>
                                 <th class="text-end">ROI%</th>
                                 <th class="text-end">PnL</th>
                                 <th class="text-end">MDD</th>
@@ -57,6 +66,7 @@
                                         <div class="fw-semibold">@lead.Nickname</div>
                                         <div class="text-muted small">@ShortId(lead.LeadPortfolioId)</div>
                                     </td>
+                                    <td class="small">@(string.IsNullOrWhiteSpace(lead.SpotSymbolsSample) ? "—" : lead.SpotSymbolsSample)</td>
                                     <td class="text-end">@lead.Roi.ToString("0.0")</td>
                                     <td class="text-end">@lead.Pnl.ToString("0")</td>
                                     <td class="text-end">@lead.Mdd.ToString("0.0")</td>
@@ -274,6 +284,7 @@
     private bool _starting;
     private string? _error;
     private string? _info;
+    private string? _boardNote;
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _uiCts;
 
@@ -318,19 +329,24 @@
     {
         _loadingBoard = true;
         _error = null;
+        _boardNote = "Filtrando leads Spot (historial + exchangeInfo)...";
         try
         {
-            var list = await Mirror.GetLeaderboardAsync();
+            var board = await Mirror.GetSpotCompatibleLeaderboardAsync();
             _leads.Clear();
-            _leads.AddRange(list);
+            _leads.AddRange(board.Leads);
+            _boardNote = board.Note;
             if (_leads.Count == 0)
             {
-                _error = "No se pudo cargar el ranking (rate-limit o endpoint ocupado). Reintenta.";
+                _error = string.IsNullOrWhiteSpace(board.Note)
+                    ? "No hay leads Spot-compatible ahora. Reintenta mas tarde."
+                    : board.Note;
             }
         }
         catch (Exception ex)
         {
             _error = ex.Message;
+            _boardNote = null;
         }
         finally
         {
