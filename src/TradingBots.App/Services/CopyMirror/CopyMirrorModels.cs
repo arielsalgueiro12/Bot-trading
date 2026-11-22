@@ -58,6 +58,8 @@ public sealed class CopyMirrorEvent
     public DateTime Utc { get; init; } = DateTime.UtcNow;
     public string Kind { get; init; } = "info";
     public string Message { get; init; } = string.Empty;
+    public string? LeadPortfolioId { get; init; }
+    public string? LeadNickname { get; init; }
     public string? Symbol { get; init; }
     /// <summary>BUY / SELL / SKIP / INFO</summary>
     public string? Action { get; init; }
@@ -74,7 +76,8 @@ public sealed class CopyMirrorEvent
         Kind is "dryrun" or "executed" or "detected" or "skipped" or "error";
 }
 
-public sealed class CopyMirrorStatus
+/// <summary>Estado de un mirror individual (un lead).</summary>
+public sealed class CopyMirrorSessionStatus
 {
     public CopyMirrorSettings Settings { get; init; } = new();
     public bool WarmingUp { get; init; }
@@ -88,9 +91,34 @@ public sealed class CopyMirrorStatus
     public int LastPollMs { get; init; }
     public int FailStreak { get; init; }
     public int RecommendedDelayMs { get; init; }
+    public IReadOnlyDictionary<string, decimal> OpenSpotQty { get; init; } =
+        new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>Hub multi-mirror: varios leads a la vez.</summary>
+public sealed class CopyMirrorStatus
+{
+    public const int MaxConcurrentMirrors = 5;
+
+    public int ActiveCount { get; init; }
+    public int MaxConcurrent { get; init; } = MaxConcurrentMirrors;
+    public IReadOnlyList<CopyMirrorSessionStatus> Sessions { get; init; } = [];
     public IReadOnlyList<CopyMirrorEvent> RecentEvents { get; init; } = [];
-    /// <summary>Solo compras/ventas/skips del mirror (mas legible que el log completo).</summary>
     public IReadOnlyList<CopyMirrorEvent> RecentMovements { get; init; } = [];
+
+    /// <summary>Compat: primera sesion activa o vacia (UI antigua / API).</summary>
+    public CopyMirrorSettings Settings { get; init; } = new();
+    public bool WarmingUp { get; init; }
+    public DateTime? LastPollUtc { get; init; }
+    public DateTime? LastSuccessUtc { get; init; }
+    public string LastError { get; init; } = string.Empty;
+    public int SeenOrders { get; init; }
+    public int MirroredBuys { get; init; }
+    public int MirroredSells { get; init; }
+    public int Skipped { get; init; }
+    public int LastPollMs { get; init; }
+    public int FailStreak { get; init; }
+    public int RecommendedDelayMs { get; init; }
     public IReadOnlyDictionary<string, decimal> OpenSpotQty { get; init; } =
         new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
 }

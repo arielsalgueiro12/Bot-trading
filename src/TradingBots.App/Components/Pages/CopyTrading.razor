@@ -127,15 +127,15 @@
                 <div class="d-flex flex-wrap gap-2">
                     <button class="btn btn-primary" type="button" @onclick="StartAsync"
                             disabled="@(!CanStart || _starting)">
-                        @(_starting ? "Iniciando..." : "Iniciar mirror")
+                        @(_starting ? "Iniciando..." : "Añadir / iniciar mirror")
                     </button>
-                    <button class="btn btn-outline-light" type="button" @onclick="StopAsync" disabled="@_starting">
-                        Detener
+                    <button class="btn btn-outline-light" type="button" @onclick="StopAllAsync" disabled="@_starting">
+                        Detener todos
                     </button>
                 </div>
                 <p class="small text-muted mb-0">
-                    Warm-up: la primera lectura marca el historial y no copia nada viejo.
-                    Luego solo reacciona a ordenes NUEVAS del lead. LIVE solo LONG Spot.
+                    Hasta @CopyMirrorStatus.MaxConcurrentMirrors mirrors a la vez. “Añadir” no sustituye los ya activos.
+                    Warm-up por lead; LIVE solo LONG Spot.
                 </p>
             </div>
         </div>
@@ -145,36 +145,84 @@
 @{
     var st = Mirror.GetStatus();
 }
+<div class="card mb-4">
+    <div class="card-header">Mirrors activos (@st.ActiveCount / @st.MaxConcurrent)</div>
+    <div class="card-body p-0">
+        @if (st.Sessions.Count == 0)
+        {
+            <p class="text-muted small p-3 mb-0">Ningun mirror activo. Elige un lead y pulsa Añadir / iniciar.</p>
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table table-sm mb-0 align-middle">
+                    <thead>
+                    <tr>
+                        <th>Lead</th>
+                        <th>Modo</th>
+                        <th class="text-end">USDT</th>
+                        <th>Warm-up</th>
+                        <th>Poll</th>
+                        <th class="text-end">Buy/Sell/Skip</th>
+                        <th></th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var s in st.Sessions)
+                    {
+                        <tr>
+                            <td>
+                                <div class="fw-semibold">@(string.IsNullOrWhiteSpace(s.Settings.LeadNickname) ? ShortId(s.Settings.LeadPortfolioId) : s.Settings.LeadNickname)</div>
+                                <div class="text-muted small">@ShortId(s.Settings.LeadPortfolioId)</div>
+                                @if (!string.IsNullOrWhiteSpace(s.LastError))
+                                {
+                                    <div class="text-danger small">@s.LastError</div>
+                                }
+                            </td>
+                            <td>@(s.Settings.DryRun ? "dry-run" : "LIVE")</td>
+                            <td class="text-end">@s.Settings.QuotePerTradeUsdt.ToString("0.##")</td>
+                            <td>@(s.WarmingUp ? "si" : "no")</td>
+                            <td class="small">@(s.LastPollUtc?.ToString("HH:mm:ss") ?? "—")</td>
+                            <td class="text-end">@s.MirroredBuys / @s.MirroredSells / @s.Skipped</td>
+                            <td class="text-end">
+                                <button class="btn btn-sm btn-outline-danger" type="button"
+                                        @onclick="() => StopOneAsync(s.Settings.LeadPortfolioId)">
+                                    Detener
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
 <div class="row g-3 mb-4">
     <div class="col-md-4">
         <div class="card h-100">
-            <div class="card-header">Estado</div>
+            <div class="card-header">Resumen hub</div>
             <div class="card-body small">
-                <div><strong>Activo:</strong> @(st.Settings.Enabled ? "SI" : "no") @(st.Settings.DryRun ? "(dry-run)" : "(LIVE)")</div>
-                <div><strong>Lead:</strong> @(string.IsNullOrWhiteSpace(st.Settings.LeadNickname) ? (string.IsNullOrWhiteSpace(st.Settings.LeadPortfolioId) ? "—" : ShortId(st.Settings.LeadPortfolioId)) : st.Settings.LeadNickname)</div>
-                <div><strong>Warm-up:</strong> @(st.WarmingUp ? "si" : "no")</div>
-                <div><strong>Ultimo poll:</strong> @(st.LastPollUtc?.ToString("HH:mm:ss") ?? "—") (@st.LastPollMs ms)</div>
+                <div><strong>Activos:</strong> @st.ActiveCount / @st.MaxConcurrent</div>
+                <div><strong>Ultimo poll:</strong> @(st.LastPollUtc?.ToString("HH:mm:ss") ?? "—")</div>
                 <div><strong>Delay poll:</strong> @st.RecommendedDelayMs ms @(st.FailStreak > 0 ? $"(backoff fail={st.FailStreak})" : "")</div>
                 <div><strong>Vistos / buy / sell / skip:</strong> @st.SeenOrders / @st.MirroredBuys / @st.MirroredSells / @st.Skipped</div>
                 @if (st.OpenSpotQty.Count > 0)
                 {
-                    <div class="mt-2"><strong>Posicion mirror:</strong>
+                    <div class="mt-2"><strong>Posiciones mirror:</strong>
                         @foreach (var kv in st.OpenSpotQty)
                         {
                             <div>@kv.Key: @kv.Value.ToString("0.######")</div>
                         }
                     </div>
                 }
-                @if (!string.IsNullOrWhiteSpace(st.LastError))
-                {
-                    <div class="text-danger mt-2">@st.LastError</div>
-                }
             </div>
         </div>
     </div>
     <div class="col-md-8">
         <div class="card h-100">
-            <div class="card-header">Movimientos (compra / venta)</div>
+            <div class="card-header">Movimientos (todos los mirrors)</div>
             <div class="card-body p-0">
                 @if (st.RecentMovements.Count == 0)
                 {
@@ -190,6 +238,7 @@
                             <thead>
                             <tr>
                                 <th>UTC</th>
+                                <th>Lead</th>
                                 <th>Accion</th>
                                 <th>Modo</th>
                                 <th>Symbol</th>
@@ -204,6 +253,7 @@
                             {
                                 <tr>
                                     <td class="text-nowrap">@mv.Utc.ToString("HH:mm:ss")</td>
+                                    <td class="small">@(string.IsNullOrWhiteSpace(mv.LeadNickname) ? ShortId(mv.LeadPortfolioId ?? "") : mv.LeadNickname)</td>
                                     <td>
                                         <span class="badge @(ActionBadgeClass(mv.Action))">@(mv.Action ?? mv.Kind)</span>
                                     </td>
@@ -295,15 +345,13 @@
     protected override async Task OnInitializedAsync()
     {
         var st = Mirror.GetStatus();
+        var first = st.Sessions.FirstOrDefault();
         _form = new CopyMirrorSettings
         {
-            Enabled = st.Settings.Enabled,
-            DryRun = st.Settings.DryRun,
-            LongOnly = st.Settings.LongOnly,
-            LeadPortfolioId = st.Settings.LeadPortfolioId,
-            LeadNickname = st.Settings.LeadNickname,
-            QuotePerTradeUsdt = st.Settings.QuotePerTradeUsdt,
-            PollIntervalMs = st.Settings.PollIntervalMs
+            DryRun = first?.Settings.DryRun ?? true,
+            LongOnly = first?.Settings.LongOnly ?? true,
+            QuotePerTradeUsdt = first?.Settings.QuotePerTradeUsdt ?? 15m,
+            PollIntervalMs = first?.Settings.PollIntervalMs ?? 3500
         };
         _uiCts = new CancellationTokenSource();
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
@@ -399,29 +447,13 @@
                 PollIntervalMs = _form.PollIntervalMs
             });
 
-            // Poll inmediato (si Binance esta busy, el hosted service reintenta con backoff).
             using var scope = ScopeFactory.CreateScope();
             await Mirror.PollOnceAsync(scope.ServiceProvider);
 
             var st = Mirror.GetStatus();
-            var busy = st.LastError.Contains("busy", StringComparison.OrdinalIgnoreCase) ||
-                       st.LastError.Contains("try again", StringComparison.OrdinalIgnoreCase);
-            if (busy)
-            {
-                _info =
-                    $"Mirror {(_form.DryRun ? "DRY-RUN" : "LIVE")} activo. Binance order-history esta ocupado (rate-limit); " +
-                    $"reintenta solo cada ~{st.RecommendedDelayMs}ms. No es por desmarcar dry-run.";
-            }
-            else if (st.LastError is { Length: > 0 })
-            {
-                _info = $"Mirror activo, pero el poll fallo: {st.LastError}";
-            }
-            else
-            {
-                _info =
-                    $"Mirror {(_form.DryRun ? "DRY-RUN" : "LIVE")} iniciado. Warm-up/eventos abajo. " +
-                    $"Activo={st.Settings.Enabled}, vistos={st.SeenOrders}.";
-            }
+            _info =
+                $"Mirror {(_form.DryRun ? "DRY-RUN" : "LIVE")} añadido. Activos={st.ActiveCount}/{st.MaxConcurrent}. " +
+                (string.IsNullOrWhiteSpace(st.LastError) ? "Warm-up/eventos abajo." : $"Aviso: {st.LastError}");
         }
         catch (Exception ex)
         {
@@ -433,10 +465,18 @@
         }
     }
 
-    private Task StopAsync()
+    private Task StopAllAsync()
     {
         Mirror.Stop();
-        _info = "Mirror detenido.";
+        _info = "Todos los mirrors detenidos.";
+        _error = null;
+        return Task.CompletedTask;
+    }
+
+    private Task StopOneAsync(string leadPortfolioId)
+    {
+        Mirror.Stop(leadPortfolioId);
+        _info = $"Mirror detenido: {ShortId(leadPortfolioId)}";
         _error = null;
         return Task.CompletedTask;
     }

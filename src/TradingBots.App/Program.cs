@@ -760,17 +760,34 @@ app.MapPost("/api/copy-mirror/start", async (
         return Results.BadRequest(new { error = "LeadPortfolioId numerico requerido." });
     }
 
-    request.Enabled = true;
-    request.LeadPortfolioId = request.LeadPortfolioId.Trim();
-    mirror.UpdateSettings(request);
-    using var scope = scopeFactory.CreateScope();
-    await mirror.PollOnceAsync(scope.ServiceProvider);
-    return Results.Ok(mirror.GetStatus());
+    try
+    {
+        request.Enabled = true;
+        request.LeadPortfolioId = request.LeadPortfolioId.Trim();
+        mirror.UpdateSettings(request);
+        using var scope = scopeFactory.CreateScope();
+        await mirror.PollOnceAsync(scope.ServiceProvider);
+        return Results.Ok(mirror.GetStatus());
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
 });
 
-app.MapPost("/api/copy-mirror/stop", (TradingBots.App.Services.CopyMirror.ICopyMirrorService mirror) =>
+app.MapPost("/api/copy-mirror/stop", (
+    string? leadPortfolioId,
+    TradingBots.App.Services.CopyMirror.ICopyMirrorService mirror) =>
 {
-    mirror.Stop();
+    if (string.IsNullOrWhiteSpace(leadPortfolioId))
+    {
+        mirror.Stop();
+    }
+    else
+    {
+        mirror.Stop(leadPortfolioId);
+    }
+
     return Results.Ok(mirror.GetStatus());
 });
 
