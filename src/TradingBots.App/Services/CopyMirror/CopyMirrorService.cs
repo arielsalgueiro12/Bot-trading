@@ -264,6 +264,18 @@ public sealed class CopyMirrorService(
             return;
         }
 
+        var execution = scopedServices.GetRequiredService<IBinanceTradeExecutionService>();
+        // Leads Futures operan pares que a menudo NO existen en Spot (testnet ni mainnet).
+        if (!await execution.IsSpotSymbolTradableAsync(order.Symbol, ct))
+        {
+            Interlocked.Increment(ref _skipped);
+            PushEvent("skipped",
+                $"SKIP {order.Symbol}: no cotiza en Spot del entorno activo (tipico Futures-only). Elige un lead que opere BTC/ETH u otros Spot.",
+                order.Symbol, "SKIP", settings.DryRun ? "dryrun" : "live", order.ExecutedQty, order.AvgPrice, null,
+                order.OrderTimeMs, detectDelayMs);
+            return;
+        }
+
         if (settings.DryRun)
         {
             if (isBuy)
@@ -286,7 +298,6 @@ public sealed class CopyMirrorService(
             return;
         }
 
-        var execution = scopedServices.GetRequiredService<IBinanceTradeExecutionService>();
         var execStart = DateTime.UtcNow;
 
         if (isBuy)

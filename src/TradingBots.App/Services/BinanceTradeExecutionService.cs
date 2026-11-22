@@ -18,6 +18,8 @@ public interface IBinanceTradeExecutionService
     string GetLastExecutionError();
     Task<TradeFillResult?> MarketBuyAsync(string symbol, decimal quoteOrderQty, Guid? botId = null, CancellationToken ct = default);
     Task<TradeFillResult?> MarketSellAsync(string symbol, decimal quantity, Guid? botId = null, CancellationToken ct = default);
+    /// <summary>True si el simbolo existe y esta TRADING en Spot del entorno activo (Sandbox/Prod).</summary>
+    Task<bool> IsSpotSymbolTradableAsync(string symbol, CancellationToken ct = default);
 }
 
 public sealed class TradeFillResult
@@ -42,6 +44,19 @@ public sealed class BinanceTradeExecutionService(
     private int _reconcileRecovered;
 
     public string GetLastExecutionError() => _lastExecutionError;
+
+    public async Task<bool> IsSpotSymbolTradableAsync(string symbol, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return false;
+        }
+
+        var settings = await settingsService.GetActiveSettingsAsync();
+        var baseUrl = settingsService.ResolveMarketBaseUrl(settings);
+        var filters = await GetExchangeInfoAsync(baseUrl, symbol.Trim().ToUpperInvariant(), ct);
+        return filters is not null;
+    }
 
     public async Task<bool> IsRealTradingEnabledAsync(CancellationToken ct = default)
     {
