@@ -8,6 +8,15 @@ public sealed class CopyMirrorHostedService(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         logger.LogInformation("CopyMirror hosted service started.");
+        try
+        {
+            await mirrorService.RestorePersistedSessionsAsync(stoppingToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "CopyMirror restore on startup failed");
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             var delayMs = mirrorService.GetRecommendedDelayMs();
@@ -15,7 +24,7 @@ public sealed class CopyMirrorHostedService(
             try
             {
                 var status = mirrorService.GetStatus();
-                if (status.Settings.Enabled)
+                if (status.ActiveCount > 0)
                 {
                     using var scope = scopeFactory.CreateScope();
                     await mirrorService.PollOnceAsync(scope.ServiceProvider, stoppingToken);

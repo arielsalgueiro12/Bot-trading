@@ -547,6 +547,22 @@ using (var scope = app.Services.CreateScope())
             CREATE UNIQUE INDEX IF NOT EXISTS "IX_MarketCandles_Symbol_Interval_OpenTimeUtc"
             ON "MarketCandles"("Symbol","Interval","OpenTimeUtc");
             """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "CopyMirrorSessions"(
+                "LeadPortfolioId" varchar(40) PRIMARY KEY,
+                "LeadNickname" varchar(120) NOT NULL DEFAULT '',
+                "Enabled" boolean NOT NULL DEFAULT FALSE,
+                "DryRun" boolean NOT NULL DEFAULT TRUE,
+                "LongOnly" boolean NOT NULL DEFAULT TRUE,
+                "QuotePerTradeUsdt" numeric(18,2) NOT NULL DEFAULT 15,
+                "PollIntervalMs" integer NOT NULL DEFAULT 3500,
+                "UpdatedAtUtc" timestamp with time zone NOT NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE INDEX IF NOT EXISTS "IX_CopyMirrorSessions_Enabled"
+            ON "CopyMirrorSessions"("Enabled");
+            """);
     }
 
     if (db.Database.IsSqlite())

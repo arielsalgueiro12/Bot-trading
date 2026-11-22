@@ -1,4 +1,7 @@
 using System.Collections.Concurrent;
+using Microsoft.EntityFrameworkCore;
+using TradingBots.App.Data;
+using TradingBots.App.Models;
 
 namespace TradingBots.App.Services.CopyMirror;
 
@@ -10,6 +13,7 @@ public interface ICopyMirrorService
     void Stop();
     void Stop(string leadPortfolioId);
     int GetRecommendedDelayMs();
+    Task RestorePersistedSessionsAsync(CancellationToken ct = default);
     Task<IReadOnlyList<CopyLeadSummary>> GetLeaderboardAsync(CancellationToken ct = default);
     Task<CopyLeadBoardResult> GetSpotCompatibleLeaderboardAsync(CancellationToken ct = default);
     Task PollOnceAsync(IServiceProvider scopedServices, CancellationToken ct = default);
@@ -17,6 +21,7 @@ public interface ICopyMirrorService
 
 public sealed class CopyMirrorService(
     IBinanceCopyTradingLeadClient leadClient,
+    IServiceScopeFactory scopeFactory,
     ILogger<CopyMirrorService> logger) : ICopyMirrorService
 {
     private readonly object _gate = new();
@@ -25,6 +30,7 @@ public sealed class CopyMirrorService(
     private CopyLeadBoardResult? _spotBoardCache;
     private DateTime _spotBoardCacheUtc = DateTime.MinValue;
     private static readonly TimeSpan SpotBoardCacheTtl = TimeSpan.FromMinutes(12);
+    private int _restored;
 
     private sealed class MirrorSession
     {
@@ -146,12 +152,16 @@ public sealed class CopyMirrorService(
                     ? $"Mirror { (normalized.DryRun ? "DRY-RUN" : "LIVE") } ON → {DisplayName(session)} ({normalized.LeadPortfolioId}), {Fmt(normalized.QuotePerTradeUsdt)} USDT/trade."
                     : $"Mirror OFF → {DisplayName(session)}.");
         }
+
+        _ = PersistSessionAsync(normalized);
     }
 
     public void Stop()
     {
+        List<CopyMirrorSettings> toPersist;
         lock (_gate)
         {
+            toPersist = [];
             foreach (var session in _sessions.Values)
             {
                 if (!session.Settings.Enabled)
@@ -161,8 +171,14 @@ public sealed class CopyMirrorService(
 
                 session.Settings.Enabled = false;
                 session.WarmingUp = false;
+                toPersist.Add(CloneSettings(session.Settings));
                 PushHubEvent(session, "info", $"Mirror detenido → {DisplayName(session)}.");
             }
+        }
+
+        foreach (var s in toPersist)
+        {
+            _ = PersistSessionAsync(s);
         }
     }
 
@@ -174,6 +190,7 @@ public sealed class CopyMirrorService(
             return;
         }
 
+        CopyMirrorSettings? snapshot = null;
         lock (_gate)
         {
             if (!_sessions.TryGetValue(leadPortfolioId.Trim(), out var session))
@@ -183,7 +200,92 @@ public sealed class CopyMirrorService(
 
             session.Settings.Enabled = false;
             session.WarmingUp = false;
+            snapshot = CloneSettings(session.Settings);
             PushHubEvent(session, "info", $"Mirror detenido → {DisplayName(session)}.");
+        }
+
+        if (snapshot is not null)
+        {
+            _ = PersistSessionAsync(snapshot);
+        }
+    }
+
+    public async Task RestorePersistedSessionsAsync(CancellationToken ct = default)
+    {
+        if (Interlocked.Exchange(ref _restored, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var rows = await db.CopyMirrorSessions
+                .AsNoTracking()
+                .Where(x => x.Enabled)
+                .OrderBy(x => x.UpdatedAtUtc)
+                .Take(CopyMirrorStatus.MaxConcurrentMirrors)
+                .ToListAsync(ct);
+
+            foreach (var row in rows)
+            {
+                UpdateSettings(new CopyMirrorSettings
+                {
+                    Enabled = true,
+                    DryRun = row.DryRun,
+                    LongOnly = row.LongOnly,
+                    LeadPortfolioId = row.LeadPortfolioId,
+                    LeadNickname = row.LeadNickname,
+                    QuotePerTradeUsdt = row.QuotePerTradeUsdt,
+                    PollIntervalMs = row.PollIntervalMs
+                });
+            }
+
+            if (rows.Count > 0)
+            {
+                logger.LogInformation("CopyMirror restored {Count} persisted session(s) after restart.", rows.Count);
+                _hubEvents.Enqueue(new CopyMirrorEvent
+                {
+                    Utc = DateTime.UtcNow,
+                    Kind = "info",
+                    Message = $"Restaurados {rows.Count} mirror(s) persistidos tras reinicio/deploy."
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Interlocked.Exchange(ref _restored, 0);
+            logger.LogWarning(ex, "CopyMirror restore from DB failed");
+        }
+    }
+
+    private async Task PersistSessionAsync(CopyMirrorSettings settings)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var id = settings.LeadPortfolioId.Trim();
+            var row = await db.CopyMirrorSessions.FirstOrDefaultAsync(x => x.LeadPortfolioId == id);
+            if (row is null)
+            {
+                row = new CopyMirrorPersistedSession { LeadPortfolioId = id };
+                db.CopyMirrorSessions.Add(row);
+            }
+
+            row.LeadNickname = settings.LeadNickname ?? string.Empty;
+            row.Enabled = settings.Enabled;
+            row.DryRun = settings.DryRun;
+            row.LongOnly = settings.LongOnly;
+            row.QuotePerTradeUsdt = settings.QuotePerTradeUsdt;
+            row.PollIntervalMs = settings.PollIntervalMs;
+            row.UpdatedAtUtc = DateTime.UtcNow;
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "CopyMirror persist failed for {Lead}", settings.LeadPortfolioId);
         }
     }
 

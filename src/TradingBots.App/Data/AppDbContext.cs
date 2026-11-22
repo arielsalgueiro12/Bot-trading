@@ -13,6 +13,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<InvestmentSuggestion> InvestmentSuggestions => Set<InvestmentSuggestion>();
     public DbSet<MlTradeObservation> MlTradeObservations => Set<MlTradeObservation>();
     public DbSet<MarketCandle> MarketCandles => Set<MarketCandle>();
+    public DbSet<CopyMirrorPersistedSession> CopyMirrorSessions => Set<CopyMirrorPersistedSession>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -156,6 +157,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.Close).HasColumnType("decimal(18,8)");
             entity.Property(x => x.QuoteVolume).HasColumnType("decimal(18,2)");
             entity.HasIndex(x => new { x.Symbol, x.Interval, x.OpenTimeUtc }).IsUnique();
+        });
+
+        modelBuilder.Entity<CopyMirrorPersistedSession>(entity =>
+        {
+            entity.HasKey(x => x.LeadPortfolioId);
+            entity.Property(x => x.LeadPortfolioId).HasMaxLength(40);
+            entity.Property(x => x.LeadNickname).HasMaxLength(120);
+            entity.Property(x => x.QuotePerTradeUsdt).HasColumnType("decimal(18,2)");
+            entity.HasIndex(x => x.Enabled);
         });
     }
 }
