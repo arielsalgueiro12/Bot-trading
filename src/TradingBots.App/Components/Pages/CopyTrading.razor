@@ -6,11 +6,16 @@
 
 <PageTitle>Copy Trading</PageTitle>
 
-<h1 class="tb-page-title">Copy Mirror (prueba)</h1>
-<p class="tb-page-lead text-muted mb-4">
-    Ranking público de leads Binance Futures + mirror experimental sobre tu Spot.
-    Poll del order-history del lead; dry-run por defecto. No es el Copy Trading nativo de Binance.
+<h1 class="tb-page-title">Copy Mirror</h1>
+<p class="tb-page-lead text-muted mb-3">
+    Dos listados y dos wallets: <strong>Spot</strong> vs <strong>Futures USD-M</strong>.
+    El ranking público de Binance Copy es Futures; el tab Spot filtra leads cuyas órdenes recientes cotizan en Spot.
 </p>
+
+<div class="alert alert-secondary border-0 small mb-4" role="status">
+    <strong>Wallets (Production):</strong> Spot y Futures son billeteras distintas de la misma cuenta
+    (Transfer Spot ↔ Futures). En Sandbox son entornos separados (keys distintas).
+</div>
 
 @if (!string.IsNullOrWhiteSpace(_error))
 {
@@ -24,33 +29,63 @@
 <div class="row g-3 mb-4">
     <div class="col-lg-7">
         <div class="card h-100">
-            <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
-                <span>Leads Spot-compatible (filtro)</span>
-                <button class="btn btn-sm btn-outline-light" type="button" @onclick="LoadLeaderboardAsync" disabled="@_loadingBoard">
-                    @(_loadingBoard ? "Filtrando..." : "Actualizar ranking Spot")
-                </button>
+            <div class="card-header">
+                <ul class="nav nav-tabs card-header-tabs">
+                    <li class="nav-item">
+                        <button type="button"
+                                class="nav-link @(_boardTab == BoardTab.Spot ? "active" : null)"
+                                @onclick="SwitchToSpotBoardAsync">
+                            Listado Spot
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button type="button"
+                                class="nav-link @(_boardTab == BoardTab.Futures ? "active" : null)"
+                                @onclick="SwitchToFuturesBoardAsync">
+                            Listado Futures
+                        </button>
+                    </li>
+                </ul>
             </div>
             <div class="card-body p-0">
+                <div class="d-flex justify-content-between align-items-start gap-2 px-3 pt-3">
+                    <p class="small text-muted mb-0">
+                        @if (_boardTab == BoardTab.Spot)
+                        {
+                            <span>Leads con pares Spot recientes → wallet <strong>Spot</strong>. Venue sugerido: Spot only.</span>
+                        }
+                        else
+                        {
+                            <span>Ranking Futures completo → wallet <strong>Futures</strong>. Venue sugerido: Futures only (shorts/alts).</span>
+                        }
+                    </p>
+                    <button class="btn btn-sm btn-outline-light flex-shrink-0" type="button"
+                            @onclick="ReloadCurrentBoardAsync" disabled="@_loadingBoard">
+                        @(_loadingBoard ? "Cargando..." : "Actualizar")
+                    </button>
+                </div>
                 @if (!string.IsNullOrWhiteSpace(_boardNote))
                 {
-                    <p class="small text-muted px-3 pt-3 mb-0">@_boardNote</p>
+                    <p class="small text-muted px-3 pt-2 mb-0">@_boardNote</p>
                 }
                 @if (_leads.Count == 0)
                 {
                     <p class="text-muted small p-3 mb-0">
                         @(_loadingBoard
-                            ? "Revisando historial de leads y simbolos Spot (puede tardar ~30–60s)..."
-                            : "Pulsa actualizar para cargar solo leads cuyas ordenes recientes cotizan en Spot.")
+                            ? (_boardTab == BoardTab.Spot
+                                ? "Filtrando historial + simbolos Spot (~30–60s)..."
+                                : "Cargando ranking Futures...")
+                            : "Pulsa Actualizar para cargar el listado.")
                     </p>
                 }
                 else
                 {
-                    <div class="table-responsive">
+                    <div class="table-responsive mt-2">
                         <table class="table table-sm table-hover mb-0 align-middle">
                             <thead>
                             <tr>
                                 <th>Lead</th>
-                                <th>Simbolos Spot</th>
+                                <th>@(_boardTab == BoardTab.Spot ? "Simbolos Spot" : "AUM")</th>
                                 <th class="text-end">ROI%</th>
                                 <th class="text-end">PnL</th>
                                 <th class="text-end">MDD</th>
@@ -66,7 +101,16 @@
                                         <div class="fw-semibold">@lead.Nickname</div>
                                         <div class="text-muted small">@ShortId(lead.LeadPortfolioId)</div>
                                     </td>
-                                    <td class="small">@(string.IsNullOrWhiteSpace(lead.SpotSymbolsSample) ? "—" : lead.SpotSymbolsSample)</td>
+                                    <td class="small">
+                                        @if (_boardTab == BoardTab.Spot)
+                                        {
+                                            @(string.IsNullOrWhiteSpace(lead.SpotSymbolsSample) ? "—" : lead.SpotSymbolsSample)
+                                        }
+                                        else
+                                        {
+                                            @lead.Aum.ToString("0")
+                                        }
+                                    </td>
                                     <td class="text-end">@lead.Roi.ToString("0.0")</td>
                                     <td class="text-end">@lead.Pnl.ToString("0")</td>
                                     <td class="text-end">@lead.Mdd.ToString("0.0")</td>
@@ -106,6 +150,17 @@
                         <div class="form-text text-warning">Primero pulsa <strong>Usar</strong> en un lead de la lista.</div>
                     }
                 </div>
+
+                <div>
+                    <label class="form-label small mb-1">Wallet / venue</label>
+                    <select class="form-select form-select-sm" @bind="_form.VenueMode">
+                        <option value="@CopyMirrorVenueMode.SpotOnly">Solo Spot (wallet Spot)</option>
+                        <option value="@CopyMirrorVenueMode.FuturesOnly">Solo Futures (wallet Futures)</option>
+                        <option value="@CopyMirrorVenueMode.Auto">Auto (Spot si puede, si no Futures)</option>
+                    </select>
+                    <div class="form-text">@VenueHelp(_form.VenueMode)</div>
+                </div>
+
                 <div class="row g-2">
                     <div class="col-6">
                         <label class="form-label small mb-1">USDT por trade</label>
@@ -116,14 +171,25 @@
                         <input class="form-control form-control-sm" type="number" min="2500" step="500" @bind="_form.PollIntervalMs" />
                     </div>
                 </div>
+
+                @if (_form.VenueMode != CopyMirrorVenueMode.SpotOnly)
+                {
+                    <div>
+                        <label class="form-label small mb-1">Leverage Futures (1–5)</label>
+                        <input class="form-control form-control-sm" type="number" min="1" max="5" step="1"
+                               @bind="_form.FuturesLeverage" />
+                    </div>
+                }
+
                 <div class="form-check">
                     <input class="form-check-input" type="checkbox" id="dryRun" @bind="_form.DryRun" />
-                    <label class="form-check-label" for="dryRun">Dry-run (solo log, sin ordenes Spot)</label>
+                    <label class="form-check-label" for="dryRun">Dry-run (solo log, sin ordenes)</label>
                 </div>
                 <div class="form-check">
                     <input class="form-check-input" type="checkbox" id="longOnly" @bind="_form.LongOnly" />
-                    <label class="form-check-label" for="longOnly">Solo LONG (ignora shorts Futures)</label>
+                    <label class="form-check-label" for="longOnly">Solo LONG (ignora shorts)</label>
                 </div>
+
                 <div class="d-flex flex-wrap gap-2">
                     <button class="btn btn-primary" type="button" @onclick="StartAsync"
                             disabled="@(!CanStart || _starting)">
@@ -134,8 +200,8 @@
                     </button>
                 </div>
                 <p class="small text-muted mb-0">
-                    Hasta @CopyMirrorStatus.MaxConcurrentMirrors mirrors a la vez. “Añadir” no sustituye los ya activos.
-                    Warm-up por lead; LIVE solo LONG Spot.
+                    Hasta @CopyMirrorStatus.MaxConcurrentMirrors mirrors. Cada uno puede usar venue distinto
+                    (Spot y Futures a la vez).
                 </p>
             </div>
         </div>
@@ -160,6 +226,7 @@
                     <tr>
                         <th>Lead</th>
                         <th>Modo</th>
+                        <th>Venue / wallet</th>
                         <th class="text-end">USDT</th>
                         <th>Warm-up</th>
                         <th>Poll</th>
@@ -180,6 +247,14 @@
                                 }
                             </td>
                             <td>@(s.Settings.DryRun ? "dry-run" : "LIVE")</td>
+                            <td class="small">
+                                @VenueLabel(s.Settings.VenueMode)
+                                @if (s.Settings.VenueMode != CopyMirrorVenueMode.SpotOnly)
+                                {
+                                    <span> x@s.Settings.FuturesLeverage</span>
+                                }
+                                <span>@(s.Settings.LongOnly ? " · L" : " · L/S")</span>
+                            </td>
                             <td class="text-end">@s.Settings.QuotePerTradeUsdt.ToString("0.##")</td>
                             <td>@(s.WarmingUp ? "si" : "no")</td>
                             <td class="small">@(s.LastPollUtc?.ToString("HH:mm:ss") ?? "—")</td>
@@ -227,8 +302,7 @@
                 @if (st.RecentMovements.Count == 0)
                 {
                     <p class="text-muted small p-3 mb-0">
-                        Aun no hay compras/ventas. Con el mirror activo apareceran aqui cuando el lead opere
-                        (en dry-run: COMPRA/VENTA simuladas; en LIVE: ejecutadas en Spot).
+                        Aun no hay compras/ventas. Con el mirror activo apareceran aqui cuando el lead opere.
                     </p>
                 }
                 else
@@ -323,13 +397,24 @@
 </details>
 
 <div class="alert alert-warning border-0 mb-0" role="status">
-    Limite real: Binance no publica fills tick-a-tick. El delay minimo tipico es el del poll (~1–3s)
-    mas el refresco interno de su order-history. No pegues el ID acortado con “…”; usa el boton Usar.
+    Limite real: Binance no publica fills tick-a-tick. Delay tipico = poll (~1–3s) + refresco del order-history.
+    Usa el boton Usar (no pegues IDs con “…”).
 </div>
 
 @code {
+    private enum BoardTab { Spot, Futures }
+
     private readonly List<CopyLeadSummary> _leads = [];
-    private CopyMirrorSettings _form = new() { DryRun = true, LongOnly = true, QuotePerTradeUsdt = 15m, PollIntervalMs = 3500 };
+    private CopyMirrorSettings _form = new()
+    {
+        DryRun = true,
+        LongOnly = true,
+        VenueMode = CopyMirrorVenueMode.SpotOnly,
+        FuturesLeverage = 1,
+        QuotePerTradeUsdt = 15m,
+        PollIntervalMs = 3500
+    };
+    private BoardTab _boardTab = BoardTab.Spot;
     private bool _loadingBoard;
     private bool _starting;
     private string? _error;
@@ -350,13 +435,17 @@
         {
             DryRun = first?.Settings.DryRun ?? true,
             LongOnly = first?.Settings.LongOnly ?? true,
+            VenueMode = first?.Settings.VenueMode ?? CopyMirrorVenueMode.SpotOnly,
+            FuturesLeverage = first is { Settings.FuturesLeverage: > 0 }
+                ? first.Settings.FuturesLeverage
+                : 1,
             QuotePerTradeUsdt = first?.Settings.QuotePerTradeUsdt ?? 15m,
             PollIntervalMs = first?.Settings.PollIntervalMs ?? 3500
         };
         _uiCts = new CancellationTokenSource();
         _timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
         _ = RefreshLoopAsync(_uiCts.Token);
-        await LoadLeaderboardAsync();
+        await LoadSpotBoardAsync();
     }
 
     private async Task RefreshLoopAsync(CancellationToken ct)
@@ -373,11 +462,25 @@
         }
     }
 
-    private async Task LoadLeaderboardAsync()
+    private Task SwitchToSpotBoardAsync() =>
+        _boardTab == BoardTab.Spot && _leads.Count > 0
+            ? Task.CompletedTask
+            : LoadSpotBoardAsync();
+
+    private Task SwitchToFuturesBoardAsync() =>
+        _boardTab == BoardTab.Futures && _leads.Count > 0
+            ? Task.CompletedTask
+            : LoadFuturesBoardAsync();
+
+    private Task ReloadCurrentBoardAsync() =>
+        _boardTab == BoardTab.Spot ? LoadSpotBoardAsync() : LoadFuturesBoardAsync();
+
+    private async Task LoadSpotBoardAsync()
     {
         _loadingBoard = true;
+        _boardTab = BoardTab.Spot;
         _error = null;
-        _boardNote = "Filtrando leads Spot (historial + exchangeInfo)...";
+        _boardNote = "Filtrando leads Spot-compatible...";
         try
         {
             var board = await Mirror.GetSpotCompatibleLeaderboardAsync();
@@ -387,8 +490,38 @@
             if (_leads.Count == 0)
             {
                 _error = string.IsNullOrWhiteSpace(board.Note)
-                    ? "No hay leads Spot-compatible ahora. Reintenta mas tarde."
+                    ? "No hay leads Spot-compatible ahora. Prueba el listado Futures."
                     : board.Note;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+            _boardNote = null;
+        }
+        finally
+        {
+            _loadingBoard = false;
+        }
+    }
+
+    private async Task LoadFuturesBoardAsync()
+    {
+        _loadingBoard = true;
+        _boardTab = BoardTab.Futures;
+        _error = null;
+        _boardNote = "Cargando ranking Futures...";
+        try
+        {
+            var leads = await Mirror.GetLeaderboardAsync();
+            _leads.Clear();
+            _leads.AddRange(leads);
+            _boardNote =
+                "Listado Futures (sin filtro Spot). Ideal con venue Solo Futures o Auto. " +
+                "Requiere saldo en wallet Futures (Production) o Futures testnet (Sandbox).";
+            if (_leads.Count == 0)
+            {
+                _error = "Ranking Futures vacio. Reintenta mas tarde.";
             }
         }
         catch (Exception ex)
@@ -416,8 +549,18 @@
     {
         _form.LeadPortfolioId = lead.LeadPortfolioId;
         _form.LeadNickname = lead.Nickname;
+        _form.VenueMode = _boardTab == BoardTab.Spot
+            ? CopyMirrorVenueMode.SpotOnly
+            : CopyMirrorVenueMode.FuturesOnly;
+        if (_boardTab == BoardTab.Futures)
+        {
+            _form.LongOnly = false;
+        }
+
         _error = null;
-        _info = $"Lead listo: {lead.Nickname} ({ShortId(lead.LeadPortfolioId)}). Ahora pulsa Iniciar mirror.";
+        _info =
+            $"Lead listo: {lead.Nickname} ({ShortId(lead.LeadPortfolioId)}). " +
+            $"Venue={VenueLabel(_form.VenueMode)}. Pulsa Añadir / iniciar.";
     }
 
     private bool Selected(CopyLeadSummary lead) =>
@@ -441,6 +584,8 @@
                 Enabled = true,
                 DryRun = _form.DryRun,
                 LongOnly = _form.LongOnly,
+                VenueMode = _form.VenueMode,
+                FuturesLeverage = _form.FuturesLeverage,
                 LeadPortfolioId = _form.LeadPortfolioId.Trim(),
                 LeadNickname = _form.LeadNickname,
                 QuotePerTradeUsdt = _form.QuotePerTradeUsdt,
@@ -452,7 +597,8 @@
 
             var st = Mirror.GetStatus();
             _info =
-                $"Mirror {(_form.DryRun ? "DRY-RUN" : "LIVE")} añadido. Activos={st.ActiveCount}/{st.MaxConcurrent}. " +
+                $"Mirror {(_form.DryRun ? "DRY-RUN" : "LIVE")} [{VenueLabel(_form.VenueMode)}] añadido. " +
+                $"Activos={st.ActiveCount}/{st.MaxConcurrent}. " +
                 (string.IsNullOrWhiteSpace(st.LastError) ? "Warm-up/eventos abajo." : $"Aviso: {st.LastError}");
         }
         catch (Exception ex)
@@ -480,6 +626,22 @@
         _error = null;
         return Task.CompletedTask;
     }
+
+    private static string VenueLabel(CopyMirrorVenueMode mode) => mode switch
+    {
+        CopyMirrorVenueMode.SpotOnly => "Spot",
+        CopyMirrorVenueMode.FuturesOnly => "Futures",
+        CopyMirrorVenueMode.Auto => "Auto",
+        _ => mode.ToString()
+    };
+
+    private static string VenueHelp(CopyMirrorVenueMode mode) => mode switch
+    {
+        CopyMirrorVenueMode.SpotOnly => "Usa saldo Spot. Salta shorts y pares solo-Futures.",
+        CopyMirrorVenueMode.FuturesOnly => "Usa saldo Futures. Longs y shorts (si no marcas Solo LONG).",
+        CopyMirrorVenueMode.Auto => "LONG en Spot si cotiza; si no, Futures. SHORT siempre Futures.",
+        _ => string.Empty
+    };
 
     private static string ShortId(string id) =>
         string.IsNullOrEmpty(id) ? "" : (id.Length <= 10 ? id : id[..6] + "…" + id[^4..]);

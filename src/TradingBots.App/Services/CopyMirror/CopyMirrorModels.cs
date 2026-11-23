@@ -41,11 +41,42 @@ public sealed class CopyLeadOrder
         $"{Symbol}|{Side}|{PositionSide}|{OrderTimeMs}|{ExecutedQty.ToString(System.Globalization.CultureInfo.InvariantCulture)}|{AvgPrice.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
 }
 
+/// <summary>Wallet/venue de ejecucion del mirror.</summary>
+public enum CopyMirrorVenueMode
+{
+    /// <summary>Solo wallet Spot. Ignora pares/shorts que no se puedan mapear a Spot.</summary>
+    SpotOnly = 0,
+    /// <summary>Solo wallet Futures USD-M (longs y shorts).</summary>
+    FuturesOnly = 1,
+    /// <summary>LONG: Spot si cotiza, si no Futures. SHORT: siempre Futures.</summary>
+    Auto = 2
+}
+
 public sealed class CopyMirrorSettings
 {
     public bool Enabled { get; set; }
     public bool DryRun { get; set; } = true;
     public bool LongOnly { get; set; } = true;
+    /// <summary>Venue de ejecucion: Spot / Futures / Auto.</summary>
+    public CopyMirrorVenueMode VenueMode { get; set; } = CopyMirrorVenueMode.SpotOnly;
+    /// <summary>Compat: true si VenueMode permite Futures (Auto o FuturesOnly).</summary>
+    public bool AllowFutures
+    {
+        get => VenueMode is CopyMirrorVenueMode.Auto or CopyMirrorVenueMode.FuturesOnly;
+        set
+        {
+            if (value && VenueMode == CopyMirrorVenueMode.SpotOnly)
+            {
+                VenueMode = CopyMirrorVenueMode.Auto;
+            }
+            else if (!value)
+            {
+                VenueMode = CopyMirrorVenueMode.SpotOnly;
+            }
+        }
+    }
+    /// <summary>Apalancamiento USD-M acotado 1–5 (default 1 = notional ≈ margen).</summary>
+    public int FuturesLeverage { get; set; } = 1;
     public string LeadPortfolioId { get; set; } = string.Empty;
     public string LeadNickname { get; set; } = string.Empty;
     public decimal QuotePerTradeUsdt { get; set; } = 15m;

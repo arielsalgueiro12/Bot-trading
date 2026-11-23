@@ -78,6 +78,17 @@ builder.Services.AddHttpClient<IBinanceTradeExecutionService, BinanceTradeExecut
         client.Timeout = TimeSpan.FromSeconds(60);
         client.DefaultRequestHeaders.UserAgent.ParseAdd("TradingBotsApp/1.0");
     });
+builder.Services.AddHttpClient<IBinanceFuturesExecutionService, BinanceFuturesExecutionService>()
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        AutomaticDecompression = DecompressionMethods.All,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+    })
+    .ConfigureHttpClient(client =>
+    {
+        client.Timeout = TimeSpan.FromSeconds(60);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("TradingBotsApp/1.0");
+    });
 builder.Services.AddScoped<IBotService, BotService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<ClientAuthSession>();
@@ -563,6 +574,15 @@ using (var scope = app.Services.CreateScope())
             CREATE INDEX IF NOT EXISTS "IX_CopyMirrorSessions_Enabled"
             ON "CopyMirrorSessions"("Enabled");
             """);
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "CopyMirrorSessions" ADD COLUMN IF NOT EXISTS "AllowFutures" boolean NOT NULL DEFAULT FALSE;
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "CopyMirrorSessions" ADD COLUMN IF NOT EXISTS "FuturesLeverage" integer NOT NULL DEFAULT 1;
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "CopyMirrorSessions" ADD COLUMN IF NOT EXISTS "VenueMode" integer NOT NULL DEFAULT 0;
+            """);
     }
 
     if (db.Database.IsSqlite())
@@ -575,7 +595,10 @@ using (var scope = app.Services.CreateScope())
                      """ALTER TABLE BinanceSettings ADD COLUMN MaxConcurrentAltPositions INTEGER NOT NULL DEFAULT 4;""",
                      """ALTER TABLE BinanceSettings ADD COLUMN NeverTradedStopHours INTEGER NOT NULL DEFAULT 36;""",
                      """ALTER TABLE MlTradeObservations ADD COLUMN IsShadow INTEGER NOT NULL DEFAULT 0;""",
-                     """ALTER TABLE MlTradeObservations ADD COLUMN RejectReason TEXT NULL;"""
+                     """ALTER TABLE MlTradeObservations ADD COLUMN RejectReason TEXT NULL;""",
+                     """ALTER TABLE CopyMirrorSessions ADD COLUMN AllowFutures INTEGER NOT NULL DEFAULT 0;""",
+                     """ALTER TABLE CopyMirrorSessions ADD COLUMN FuturesLeverage INTEGER NOT NULL DEFAULT 1;""",
+                     """ALTER TABLE CopyMirrorSessions ADD COLUMN VenueMode INTEGER NOT NULL DEFAULT 0;"""
                  })
         {
             try

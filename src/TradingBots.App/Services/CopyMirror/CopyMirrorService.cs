@@ -37,6 +37,8 @@ public sealed class CopyMirrorService(
         public CopyMirrorSettings Settings { get; set; } = new();
         public ConcurrentDictionary<string, byte> Seen { get; } = new(StringComparer.Ordinal);
         public ConcurrentDictionary<string, decimal> OpenQty { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public ConcurrentDictionary<string, decimal> OpenFutLong { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public ConcurrentDictionary<string, decimal> OpenFutShort { get; } = new(StringComparer.OrdinalIgnoreCase);
         public bool WarmingUp { get; set; }
         public DateTime? LastPollUtc { get; set; }
         public DateTime? LastSuccessUtc { get; set; }
@@ -63,7 +65,7 @@ public sealed class CopyMirrorService(
             var allOpen = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
             foreach (var s in _sessions.Values.Where(x => x.Settings.Enabled))
             {
-                foreach (var kv in s.OpenQty)
+                foreach (var kv in ToSessionStatus(s).OpenSpotQty)
                 {
                     allOpen[kv.Key] = allOpen.TryGetValue(kv.Key, out var cur) ? cur + kv.Value : kv.Value;
                 }
@@ -137,6 +139,8 @@ public sealed class CopyMirrorService(
             {
                 session.Seen.Clear();
                 session.OpenQty.Clear();
+                session.OpenFutLong.Clear();
+                session.OpenFutShort.Clear();
                 session.WarmingUp = true;
                 session.FailStreak = 0;
                 session.LastError = string.Empty;
@@ -149,7 +153,11 @@ public sealed class CopyMirrorService(
 
             PushHubEvent(session, "info",
                 normalized.Enabled
-                    ? $"Mirror { (normalized.DryRun ? "DRY-RUN" : "LIVE") } ON → {DisplayName(session)} ({normalized.LeadPortfolioId}), {Fmt(normalized.QuotePerTradeUsdt)} USDT/trade."
+                    ? $"Mirror {(normalized.DryRun ? "DRY-RUN" : "LIVE")} ON → {DisplayName(session)} " +
+                      $"({normalized.LeadPortfolioId}), {Fmt(normalized.QuotePerTradeUsdt)} USDT/trade, " +
+                      $"Venue={normalized.VenueMode}" +
+                      (normalized.AllowFutures ? $" x{normalized.FuturesLeverage}" : "") +
+                      $", LongOnly={normalized.LongOnly}."
                     : $"Mirror OFF → {DisplayName(session)}.");
         }
 
@@ -235,6 +243,8 @@ public sealed class CopyMirrorService(
                     Enabled = true,
                     DryRun = row.DryRun,
                     LongOnly = row.LongOnly,
+                    VenueMode = ResolvePersistedVenue(row),
+                    FuturesLeverage = row.FuturesLeverage,
                     LeadPortfolioId = row.LeadPortfolioId,
                     LeadNickname = row.LeadNickname,
                     QuotePerTradeUsdt = row.QuotePerTradeUsdt,
@@ -278,6 +288,9 @@ public sealed class CopyMirrorService(
             row.Enabled = settings.Enabled;
             row.DryRun = settings.DryRun;
             row.LongOnly = settings.LongOnly;
+            row.AllowFutures = settings.AllowFutures;
+            row.VenueMode = (int)settings.VenueMode;
+            row.FuturesLeverage = settings.FuturesLeverage;
             row.QuotePerTradeUsdt = settings.QuotePerTradeUsdt;
             row.PollIntervalMs = settings.PollIntervalMs;
             row.UpdatedAtUtc = DateTime.UtcNow;
@@ -533,7 +546,81 @@ public sealed class CopyMirrorService(
             order.Symbol, leadAction, "lead", order.ExecutedQty, order.AvgPrice, null,
             order.OrderTimeMs, detectDelayMs);
 
-        var pos = order.PositionSide ?? string.Empty;
+        if (!TryMapLeadIntent(order, settings, out var intent, out var skipReason))
+        {
+            Interlocked.Increment(ref session.Skipped);
+            PushHubEvent(session, "skipped",
+                $"[{DisplayName(session)}] SKIP {skipReason}: {order.Symbol}",
+                order.Symbol, "SKIP", "lead", order.ExecutedQty, order.AvgPrice, null,
+                order.OrderTimeMs, detectDelayMs);
+            return;
+        }
+
+        var spotExec = scopedServices.GetRequiredService<IBinanceTradeExecutionService>();
+        var futExec = scopedServices.GetRequiredService<IBinanceFuturesExecutionService>();
+        var venue = await ResolveVenueAsync(session, order.Symbol, intent, settings, spotExec, futExec, ct);
+        if (venue is null)
+        {
+            Interlocked.Increment(ref session.Skipped);
+            PushHubEvent(session, "skipped",
+                $"[{DisplayName(session)}] SKIP {order.Symbol}: sin venue Spot/Futures disponible " +
+                $"(Venue={settings.VenueMode}).",
+                order.Symbol, "SKIP", settings.DryRun ? "dryrun" : "live", order.ExecutedQty, order.AvgPrice, null,
+                order.OrderTimeMs, detectDelayMs);
+            return;
+        }
+
+        var venueTag = venue == MirrorVenue.Spot ? "Spot" : "Futures";
+        var actionLabel = intent.IsOpen ? "BUY" : "SELL";
+
+        if (settings.DryRun)
+        {
+            if (intent.IsOpen)
+            {
+                Interlocked.Increment(ref session.MirroredBuys);
+            }
+            else
+            {
+                Interlocked.Increment(ref session.MirroredSells);
+            }
+
+            PushHubEvent(session, "dryrun",
+                $"[{DisplayName(session)}] {(intent.IsOpen ? "ABRIR" : "CERRAR")} {intent.PositionSide} ({venueTag} dry-run) " +
+                $"{order.Symbol} ~{Fmt(settings.QuotePerTradeUsdt)} USDT",
+                order.Symbol, actionLabel, "dryrun", null, order.AvgPrice,
+                intent.IsOpen ? settings.QuotePerTradeUsdt : null,
+                order.OrderTimeMs, detectDelayMs);
+            return;
+        }
+
+        var execStart = DateTime.UtcNow;
+        if (venue == MirrorVenue.Spot)
+        {
+            await ExecuteSpotAsync(session, order, settings, intent, spotExec, detectDelayMs, execStart, ct);
+            return;
+        }
+
+        await ExecuteFuturesAsync(session, order, settings, intent, futExec, detectDelayMs, execStart, ct);
+    }
+
+    private enum MirrorVenue
+    {
+        Spot,
+        Futures
+    }
+
+    private readonly record struct MirrorIntent(string PositionSide, bool IsOpen, bool PreferFutures);
+
+    private static bool TryMapLeadIntent(
+        CopyLeadOrder order,
+        CopyMirrorSettings settings,
+        out MirrorIntent intent,
+        out string skipReason)
+    {
+        intent = default;
+        skipReason = string.Empty;
+        var pos = (order.PositionSide ?? string.Empty).Trim();
+        var side = (order.Side ?? string.Empty).Trim().ToUpperInvariant();
         var isShort = pos.Equals("SHORT", StringComparison.OrdinalIgnoreCase);
         var isLongLike = pos.Equals("LONG", StringComparison.OrdinalIgnoreCase) ||
                          pos.Equals("BOTH", StringComparison.OrdinalIgnoreCase) ||
@@ -541,58 +628,117 @@ public sealed class CopyMirrorService(
 
         if (settings.LongOnly && isShort)
         {
-            Interlocked.Increment(ref session.Skipped);
-            PushHubEvent(session, "skipped", $"[{DisplayName(session)}] SKIP SHORT: {order.Symbol}",
-                order.Symbol, "SKIP", "lead", order.ExecutedQty, order.AvgPrice, null,
-                order.OrderTimeMs, detectDelayMs);
-            return;
+            skipReason = "SHORT";
+            return false;
         }
 
-        var isBuy = order.Side.Equals("BUY", StringComparison.OrdinalIgnoreCase) && isLongLike;
-        var isSell = order.Side.Equals("SELL", StringComparison.OrdinalIgnoreCase) && isLongLike;
-        if (!isBuy && !isSell)
+        if (isLongLike)
         {
-            Interlocked.Increment(ref session.Skipped);
-            PushHubEvent(session, "skipped", $"[{DisplayName(session)}] SKIP lado no mapeable: {order.Side}/{order.PositionSide}",
-                order.Symbol, "SKIP", "lead", null, null, null, order.OrderTimeMs, detectDelayMs);
-            return;
-        }
-
-        var execution = scopedServices.GetRequiredService<IBinanceTradeExecutionService>();
-        if (!await execution.IsSpotSymbolTradableAsync(order.Symbol, ct))
-        {
-            Interlocked.Increment(ref session.Skipped);
-            PushHubEvent(session, "skipped",
-                $"[{DisplayName(session)}] SKIP {order.Symbol}: no cotiza en Spot del entorno activo.",
-                order.Symbol, "SKIP", settings.DryRun ? "dryrun" : "live", order.ExecutedQty, order.AvgPrice, null,
-                order.OrderTimeMs, detectDelayMs);
-            return;
-        }
-
-        if (settings.DryRun)
-        {
-            if (isBuy)
+            if (side == "BUY")
             {
-                Interlocked.Increment(ref session.MirroredBuys);
-                PushHubEvent(session, "dryrun",
-                    $"[{DisplayName(session)}] COMPRA (dry-run) {order.Symbol} ~{Fmt(settings.QuotePerTradeUsdt)} USDT",
-                    order.Symbol, "BUY", "dryrun", null, order.AvgPrice, settings.QuotePerTradeUsdt,
-                    order.OrderTimeMs, detectDelayMs);
-            }
-            else
-            {
-                Interlocked.Increment(ref session.MirroredSells);
-                PushHubEvent(session, "dryrun",
-                    $"[{DisplayName(session)}] VENTA (dry-run) {order.Symbol}",
-                    order.Symbol, "SELL", "dryrun", null, order.AvgPrice, null,
-                    order.OrderTimeMs, detectDelayMs);
+                intent = new MirrorIntent("LONG", IsOpen: true, PreferFutures: false);
+                return true;
             }
 
-            return;
+            if (side == "SELL")
+            {
+                intent = new MirrorIntent("LONG", IsOpen: false, PreferFutures: false);
+                return true;
+            }
         }
 
-        var execStart = DateTime.UtcNow;
-        if (isBuy)
+        if (isShort && settings.VenueMode != CopyMirrorVenueMode.SpotOnly)
+        {
+            // Futures: BUY SHORT = abrir short; SELL SHORT = cerrar short
+            if (side == "BUY")
+            {
+                intent = new MirrorIntent("SHORT", IsOpen: true, PreferFutures: true);
+                return true;
+            }
+
+            if (side == "SELL")
+            {
+                intent = new MirrorIntent("SHORT", IsOpen: false, PreferFutures: true);
+                return true;
+            }
+        }
+
+        skipReason = $"lado no mapeable ({order.Side}/{order.PositionSide})";
+        return false;
+    }
+
+    private static async Task<MirrorVenue?> ResolveVenueAsync(
+        MirrorSession session,
+        string symbol,
+        MirrorIntent intent,
+        CopyMirrorSettings settings,
+        IBinanceTradeExecutionService spotExec,
+        IBinanceFuturesExecutionService futExec,
+        CancellationToken ct)
+    {
+        var mode = settings.VenueMode;
+
+        if (intent.PreferFutures || mode == CopyMirrorVenueMode.FuturesOnly)
+        {
+            if (mode == CopyMirrorVenueMode.SpotOnly)
+            {
+                return null;
+            }
+
+            return await futExec.IsFuturesSymbolTradableAsync(symbol, ct) ? MirrorVenue.Futures : null;
+        }
+
+        // Cierre LONG: preferir el venue donde tengamos posicion abierta.
+        if (!intent.IsOpen && intent.PositionSide == "LONG")
+        {
+            if (mode != CopyMirrorVenueMode.FuturesOnly &&
+                session.OpenQty.TryGetValue(symbol, out var sq) && sq > 0m)
+            {
+                return MirrorVenue.Spot;
+            }
+
+            if (mode != CopyMirrorVenueMode.SpotOnly &&
+                session.OpenFutLong.TryGetValue(symbol, out var fq) && fq > 0m)
+            {
+                return MirrorVenue.Futures;
+            }
+        }
+
+        if (mode == CopyMirrorVenueMode.SpotOnly)
+        {
+            return await spotExec.IsSpotSymbolTradableAsync(symbol, ct) ? MirrorVenue.Spot : null;
+        }
+
+        if (mode == CopyMirrorVenueMode.FuturesOnly)
+        {
+            return await futExec.IsFuturesSymbolTradableAsync(symbol, ct) ? MirrorVenue.Futures : null;
+        }
+
+        // Auto: Spot primero, si no Futures.
+        if (await spotExec.IsSpotSymbolTradableAsync(symbol, ct))
+        {
+            return MirrorVenue.Spot;
+        }
+
+        if (await futExec.IsFuturesSymbolTradableAsync(symbol, ct))
+        {
+            return MirrorVenue.Futures;
+        }
+
+        return null;
+    }
+
+    private async Task ExecuteSpotAsync(
+        MirrorSession session,
+        CopyLeadOrder order,
+        CopyMirrorSettings settings,
+        MirrorIntent intent,
+        IBinanceTradeExecutionService execution,
+        int? detectDelayMs,
+        DateTime execStart,
+        CancellationToken ct)
+    {
+        if (intent.IsOpen)
         {
             var fill = await execution.MarketBuyAsync(order.Symbol, settings.QuotePerTradeUsdt, botId: null, ct);
             var execDelay = (int)(DateTime.UtcNow - execStart).TotalMilliseconds;
@@ -600,7 +746,7 @@ public sealed class CopyMirrorService(
             {
                 Interlocked.Increment(ref session.Skipped);
                 PushHubEvent(session, "error",
-                    $"[{DisplayName(session)}] COMPRA FALLIDA {order.Symbol}: {execution.GetLastExecutionError()}",
+                    $"[{DisplayName(session)}] COMPRA Spot FALLIDA {order.Symbol}: {execution.GetLastExecutionError()}",
                     order.Symbol, "BUY", "live", null, null, settings.QuotePerTradeUsdt,
                     order.OrderTimeMs, detectDelayMs, execDelay);
                 return;
@@ -609,7 +755,7 @@ public sealed class CopyMirrorService(
             session.OpenQty.AddOrUpdate(order.Symbol, fill.ExecutedQuantity, (_, cur) => cur + fill.ExecutedQuantity);
             Interlocked.Increment(ref session.MirroredBuys);
             PushHubEvent(session, "executed",
-                $"[{DisplayName(session)}] COMPRA {order.Symbol} qty={Fmt(fill.ExecutedQuantity)} @ {Fmt(fill.AveragePrice)}",
+                $"[{DisplayName(session)}] COMPRA Spot {order.Symbol} qty={Fmt(fill.ExecutedQuantity)} @ {Fmt(fill.AveragePrice)}",
                 order.Symbol, "BUY", "live", fill.ExecutedQuantity, fill.AveragePrice, settings.QuotePerTradeUsdt,
                 order.OrderTimeMs, detectDelayMs, execDelay);
             return;
@@ -619,7 +765,7 @@ public sealed class CopyMirrorService(
         {
             Interlocked.Increment(ref session.Skipped);
             PushHubEvent(session, "skipped",
-                $"[{DisplayName(session)}] SKIP VENTA: sin posicion mirror en {order.Symbol}",
+                $"[{DisplayName(session)}] SKIP VENTA Spot: sin posicion mirror en {order.Symbol}",
                 order.Symbol, "SKIP", "live", null, null, null, order.OrderTimeMs, detectDelayMs);
             return;
         }
@@ -630,7 +776,7 @@ public sealed class CopyMirrorService(
         {
             Interlocked.Increment(ref session.Skipped);
             PushHubEvent(session, "error",
-                $"[{DisplayName(session)}] VENTA FALLIDA {order.Symbol}: {execution.GetLastExecutionError()}",
+                $"[{DisplayName(session)}] VENTA Spot FALLIDA {order.Symbol}: {execution.GetLastExecutionError()}",
                 order.Symbol, "SELL", "live", qty, null, null, order.OrderTimeMs, detectDelayMs, sellExecDelay);
             return;
         }
@@ -638,9 +784,77 @@ public sealed class CopyMirrorService(
         session.OpenQty.TryRemove(order.Symbol, out _);
         Interlocked.Increment(ref session.MirroredSells);
         PushHubEvent(session, "executed",
-            $"[{DisplayName(session)}] VENTA {order.Symbol} qty={Fmt(sellFill.ExecutedQuantity)} @ {Fmt(sellFill.AveragePrice)}",
+            $"[{DisplayName(session)}] VENTA Spot {order.Symbol} qty={Fmt(sellFill.ExecutedQuantity)} @ {Fmt(sellFill.AveragePrice)}",
             order.Symbol, "SELL", "live", sellFill.ExecutedQuantity, sellFill.AveragePrice, null,
             order.OrderTimeMs, detectDelayMs, sellExecDelay);
+    }
+
+    private async Task ExecuteFuturesAsync(
+        MirrorSession session,
+        CopyLeadOrder order,
+        CopyMirrorSettings settings,
+        MirrorIntent intent,
+        IBinanceFuturesExecutionService execution,
+        int? detectDelayMs,
+        DateTime execStart,
+        CancellationToken ct)
+    {
+        var book = intent.PositionSide == "SHORT" ? session.OpenFutShort : session.OpenFutLong;
+        decimal closeQty = 0m;
+        if (!intent.IsOpen)
+        {
+            if (!book.TryGetValue(order.Symbol, out closeQty) || closeQty <= 0m)
+            {
+                Interlocked.Increment(ref session.Skipped);
+                PushHubEvent(session, "skipped",
+                    $"[{DisplayName(session)}] SKIP cierre Futures {intent.PositionSide}: sin posicion en {order.Symbol}",
+                    order.Symbol, "SKIP", "live", null, null, null, order.OrderTimeMs, detectDelayMs);
+                return;
+            }
+        }
+
+        var fill = await execution.MarketPositionAsync(
+            order.Symbol,
+            intent.PositionSide,
+            open: intent.IsOpen,
+            quoteUsdtOrCloseQty: intent.IsOpen ? settings.QuotePerTradeUsdt : closeQty,
+            quoteIsNotional: intent.IsOpen,
+            leverage: settings.FuturesLeverage,
+            ct);
+        var execDelay = (int)(DateTime.UtcNow - execStart).TotalMilliseconds;
+        var action = intent.IsOpen ? "BUY" : "SELL";
+        if (fill is null)
+        {
+            Interlocked.Increment(ref session.Skipped);
+            PushHubEvent(session, "error",
+                $"[{DisplayName(session)}] Futures {(intent.IsOpen ? "OPEN" : "CLOSE")} {intent.PositionSide} " +
+                $"FALLIDA {order.Symbol}: {execution.GetLastExecutionError()}",
+                order.Symbol, action, "live",
+                intent.IsOpen ? null : closeQty, null,
+                intent.IsOpen ? settings.QuotePerTradeUsdt : null,
+                order.OrderTimeMs, detectDelayMs, execDelay);
+            return;
+        }
+
+        if (intent.IsOpen)
+        {
+            book.AddOrUpdate(order.Symbol, fill.ExecutedQuantity, (_, cur) => cur + fill.ExecutedQuantity);
+            Interlocked.Increment(ref session.MirroredBuys);
+            PushHubEvent(session, "executed",
+                $"[{DisplayName(session)}] OPEN Futures {intent.PositionSide} {order.Symbol} " +
+                $"qty={Fmt(fill.ExecutedQuantity)} @ {Fmt(fill.AveragePrice)} x{settings.FuturesLeverage}",
+                order.Symbol, "BUY", "live", fill.ExecutedQuantity, fill.AveragePrice, settings.QuotePerTradeUsdt,
+                order.OrderTimeMs, detectDelayMs, execDelay);
+            return;
+        }
+
+        book.TryRemove(order.Symbol, out _);
+        Interlocked.Increment(ref session.MirroredSells);
+        PushHubEvent(session, "executed",
+            $"[{DisplayName(session)}] CLOSE Futures {intent.PositionSide} {order.Symbol} " +
+            $"qty={Fmt(fill.ExecutedQuantity)} @ {Fmt(fill.AveragePrice)}",
+            order.Symbol, "SELL", "live", fill.ExecutedQuantity, fill.AveragePrice, null,
+            order.OrderTimeMs, detectDelayMs, execDelay);
     }
 
     private int ComputeRecommendedDelayMsUnlocked()
@@ -664,22 +878,36 @@ public sealed class CopyMirrorService(
         return Math.Min(45_000, baseMs + extra);
     }
 
-    private CopyMirrorSessionStatus ToSessionStatus(MirrorSession s) => new()
+    private CopyMirrorSessionStatus ToSessionStatus(MirrorSession s)
     {
-        Settings = CloneSettings(s.Settings),
-        WarmingUp = s.WarmingUp,
-        LastPollUtc = s.LastPollUtc,
-        LastSuccessUtc = s.LastSuccessUtc,
-        LastError = s.LastError,
-        SeenOrders = s.Seen.Count,
-        MirroredBuys = s.MirroredBuys,
-        MirroredSells = s.MirroredSells,
-        Skipped = s.Skipped,
-        LastPollMs = s.LastPollMs,
-        FailStreak = s.FailStreak,
-        RecommendedDelayMs = ComputeSessionDelay(s),
-        OpenSpotQty = new Dictionary<string, decimal>(s.OpenQty, StringComparer.OrdinalIgnoreCase)
-    };
+        var open = new Dictionary<string, decimal>(s.OpenQty, StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in s.OpenFutLong)
+        {
+            open[$"FUT-L:{kv.Key}"] = kv.Value;
+        }
+
+        foreach (var kv in s.OpenFutShort)
+        {
+            open[$"FUT-S:{kv.Key}"] = kv.Value;
+        }
+
+        return new CopyMirrorSessionStatus
+        {
+            Settings = CloneSettings(s.Settings),
+            WarmingUp = s.WarmingUp,
+            LastPollUtc = s.LastPollUtc,
+            LastSuccessUtc = s.LastSuccessUtc,
+            LastError = s.LastError,
+            SeenOrders = s.Seen.Count,
+            MirroredBuys = s.MirroredBuys,
+            MirroredSells = s.MirroredSells,
+            Skipped = s.Skipped,
+            LastPollMs = s.LastPollMs,
+            FailStreak = s.FailStreak,
+            RecommendedDelayMs = ComputeSessionDelay(s),
+            OpenSpotQty = open
+        };
+    }
 
     private static int ComputeSessionDelay(MirrorSession s)
     {
@@ -752,11 +980,27 @@ public sealed class CopyMirrorService(
                message.Contains("418", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static CopyMirrorVenueMode ResolvePersistedVenue(CopyMirrorPersistedSession row)
+    {
+        if (Enum.IsDefined(typeof(CopyMirrorVenueMode), row.VenueMode) &&
+            (row.VenueMode != 0 || !row.AllowFutures))
+        {
+            return (CopyMirrorVenueMode)row.VenueMode;
+        }
+
+        // Legacy: solo AllowFutures sin VenueMode real → Auto.
+        return row.AllowFutures ? CopyMirrorVenueMode.Auto : CopyMirrorVenueMode.SpotOnly;
+    }
+
     private static CopyMirrorSettings Normalize(CopyMirrorSettings s) => new()
     {
         Enabled = s.Enabled,
         DryRun = s.DryRun,
         LongOnly = s.LongOnly,
+        VenueMode = Enum.IsDefined(typeof(CopyMirrorVenueMode), s.VenueMode)
+            ? s.VenueMode
+            : CopyMirrorVenueMode.SpotOnly,
+        FuturesLeverage = Math.Clamp(s.FuturesLeverage <= 0 ? 1 : s.FuturesLeverage, 1, 5),
         LeadPortfolioId = (s.LeadPortfolioId ?? string.Empty).Trim(),
         LeadNickname = (s.LeadNickname ?? string.Empty).Trim(),
         QuotePerTradeUsdt = Math.Clamp(s.QuotePerTradeUsdt <= 0 ? 15m : s.QuotePerTradeUsdt, 5m, 5000m),
@@ -768,6 +1012,8 @@ public sealed class CopyMirrorService(
         Enabled = s.Enabled,
         DryRun = s.DryRun,
         LongOnly = s.LongOnly,
+        VenueMode = s.VenueMode,
+        FuturesLeverage = s.FuturesLeverage,
         LeadPortfolioId = s.LeadPortfolioId,
         LeadNickname = s.LeadNickname,
         QuotePerTradeUsdt = s.QuotePerTradeUsdt,

@@ -12,6 +12,7 @@ public interface IBinanceSettingsService
     Task<BinanceSettingsView> UpdateAsync(UpdateBinanceSettingsRequest request);
     Task<BinanceSettingsView> ArmLiveTradingAsync(LiveChecklistRequest request);
     string ResolveMarketBaseUrl(BinanceConnectionSettings settings);
+    string ResolveFuturesBaseUrl(BinanceConnectionSettings settings);
 }
 
 public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSettingsService
@@ -111,6 +112,11 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         settings.Environment == BinanceEnvironment.Sandbox
             ? "https://testnet.binance.vision"
             : "https://api.binance.com";
+
+    public string ResolveFuturesBaseUrl(BinanceConnectionSettings settings) =>
+        settings.Environment == BinanceEnvironment.Sandbox
+            ? "https://testnet.binancefuture.com"
+            : "https://fapi.binance.com";
 
     private static BinanceSettingsView ToView(BinanceConnectionSettings settings) => new()
     {

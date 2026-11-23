@@ -8,6 +8,10 @@ public sealed class CopyMirrorPersistedSession
     public bool Enabled { get; set; }
     public bool DryRun { get; set; } = true;
     public bool LongOnly { get; set; } = true;
+    public bool AllowFutures { get; set; }
+    /// <summary>0=SpotOnly, 1=FuturesOnly, 2=Auto. Si falta columna legacy, se deriva de AllowFutures.</summary>
+    public int VenueMode { get; set; }
+    public int FuturesLeverage { get; set; } = 1;
     public decimal QuotePerTradeUsdt { get; set; } = 15m;
     public int PollIntervalMs { get; set; } = 3500;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
