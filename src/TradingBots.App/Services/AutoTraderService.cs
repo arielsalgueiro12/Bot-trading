@@ -20,9 +20,9 @@ public sealed class AutoTraderService(
         "UUSDT", "UUSDC"
     };
 
-    private const decimal MinAdjustedBuyScore = 7.2m;
+    private const decimal MinAdjustedBuyScore = 5.5m;
     private const decimal MinSymbolBiasForStandardEntry = -0.20m;
-    private const decimal MinRawScoreWhenBiasNegative = 7.2m;
+    private const decimal MinRawScoreWhenBiasNegative = 5.5m;
     private const int SuggestionTtlMinutes = 10;
     private static readonly TimeSpan RecycleCooldownAfterOperationalStop = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan IdleSlotReleaseWindow = TimeSpan.FromHours(48);
@@ -200,7 +200,9 @@ public sealed class AutoTraderService(
         var minActiveBeforePause = TimeSpan.FromMinutes(Math.Clamp(settings.MinActiveBeforePauseMinutes <= 0 ? 20 : settings.MinActiveBeforePauseMinutes, 10, 90));
         var minStoppedBeforeReactivate = TimeSpan.FromMinutes(Math.Clamp(settings.MinStoppedBeforeReactivateMinutes <= 0 ? 5 : settings.MinStoppedBeforeReactivateMinutes, 2, 30));
         var minStoppedAfterRiskMinutes = Math.Clamp(settings.MinStoppedAfterRiskStopMinutes <= 0 ? 45 : settings.MinStoppedAfterRiskStopMinutes, 15, 240);
-        var outOfTopCyclesToPause = Math.Clamp(settings.RebalanceOutOfTopCycles <= 0 ? 4 : settings.RebalanceOutOfTopCycles, 2, 6);
+        // Mas ciclos antes de pausar: evita flota de 1 bot cuando el advisor rota WATCH/BUY.
+        var configuredRebalance = settings.RebalanceOutOfTopCycles <= 0 ? 8 : settings.RebalanceOutOfTopCycles;
+        var outOfTopCyclesToPause = Math.Clamp(Math.Max(configuredRebalance, 8), 8, 12);
         var target = candidates.Take(maxAutoBots).ToList();
         var targetSymbols = target.Select(x => x.Symbol).ToHashSet(StringComparer.Ordinal);
 
@@ -240,6 +242,13 @@ public sealed class AutoTraderService(
 
             var runningSymbol = running.Symbols.FirstOrDefault() ?? string.Empty;
             var activeAge = now - (running.LastRunningStartedAtUtc ?? running.CreatedAtUtc);
+            // BTC/ETH se mantienen vivos para buscar pullbacks aunque el advisor no marque BUY ese ciclo.
+            if (EntryFilters.IsPreferredRecoverySymbol(runningSymbol))
+            {
+                running.OutOfTopCycles = 0;
+                continue;
+            }
+
             // Rebalanceo: si ya no hay BUY advisor vigente para el simbolo, libera slot al cabo de N ciclos.
             if (!string.IsNullOrWhiteSpace(runningSymbol) &&
                 !targetSymbols.Contains(runningSymbol) &&

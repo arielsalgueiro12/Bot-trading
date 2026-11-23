@@ -5,38 +5,39 @@ namespace TradingBots.App.Services.Strategies;
 /// <summary>
 /// Pullback 15m / tendencia 1h. Entradas selectivas en tendencia;
 /// la gestion de salida (parcial 1.5R, hard BE 1R, trail amplio) vive en BotService/ExitProfiles.
+/// Umbrales suavizados para evitar dias sin operaciones en mercado lateral.
 /// </summary>
 public sealed class PullbackHtfStrategySignal : IStrategySignalProvider
 {
     public StrategyType Strategy => StrategyType.PullbackHtf;
 
-    private const decimal MaxEntryRsi = 48m;
-    private const decimal MinEntryRsi = 34m;
-    private const decimal FailedBounceRsi = 26m;
+    private const decimal MaxEntryRsi = 54m;
+    private const decimal MinEntryRsi = 28m;
+    private const decimal FailedBounceRsi = 22m;
 
     public bool ShouldBuy(TechnicalMarketSnapshot technical) =>
         technical.Rsi14 is >= MinEntryRsi and <= MaxEntryRsi &&
         technical.LastPrice > 0m &&
         technical.EmaSlow > 0m &&
-        technical.LastPrice <= technical.EmaSlow &&
-        technical.MacdHistogram > technical.PreviousMacdHistogram &&
-        // Expansion minima: evita entradas "planas" que acaban en soft-BE/SL.
-        technical.MacdHistogram - technical.PreviousMacdHistogram >= technical.LastPrice * 0.000002m &&
-        technical.EmaFast >= technical.EmaSlow * 0.997m;
+        technical.LastPrice <= technical.EmaSlow * 1.002m &&
+        technical.MacdHistogram >= technical.PreviousMacdHistogram &&
+        technical.EmaFast >= technical.EmaSlow * 0.992m;
 
     /// <summary>
     /// tf1h = contexto superior. Solo invalidar rebote si la estructura se rompe de verdad.
     /// </summary>
     public bool ShouldSell(TechnicalMarketSnapshot technical, TechnicalMarketSnapshot? tf1h)
     {
-        var hourlyTrendBroke = tf1h is not null && tf1h.EmaFast < tf1h.EmaSlow;
+        var hourlyTrendBroke = tf1h is not null &&
+                               tf1h.EmaFast < tf1h.EmaSlow * 0.997m &&
+                               technical.MacdHistogram < 0m;
         var rsiCollapsed = technical.Rsi14 < FailedBounceRsi;
         var deepMacdFail = technical.MacdHistogram < technical.PreviousMacdHistogram &&
-                           technical.MacdHistogram < -0.0001m * Math.Max(1m, technical.LastPrice) &&
+                           technical.MacdHistogram < -0.00015m * Math.Max(1m, technical.LastPrice) &&
                            technical.MacdLine < technical.MacdSignal;
         var lostEmaHard = technical.LastPrice > 0m &&
                           technical.EmaSlow > 0m &&
-                          technical.LastPrice < technical.EmaSlow * 0.988m &&
+                          technical.LastPrice < technical.EmaSlow * 0.980m &&
                           technical.MacdHistogram < 0m;
         return hourlyTrendBroke || (rsiCollapsed && deepMacdFail) || lostEmaHard;
     }
@@ -46,8 +47,10 @@ public sealed class PullbackHtfStrategySignal : IStrategySignalProvider
         (technical.MacdHistogram - technical.PreviousMacdHistogram) * 700m +
         (technical.RelativeVolume * 3m);
 
+    /// <summary>Solo exige tendencia 1h; el 15m puede ir un poco rezagado en el pullback.</summary>
     public bool PassesMultiTimeframeTrend(TechnicalMarketSnapshot tf15, TechnicalMarketSnapshot tf1h) =>
-        tf1h.EmaFast >= tf1h.EmaSlow && tf15.EmaFast >= tf15.EmaSlow;
+        tf1h.EmaFast >= tf1h.EmaSlow * 0.998m &&
+        tf15.EmaFast >= tf15.EmaSlow * 0.990m;
 
     public string DescribeBuySignalGap(TechnicalMarketSnapshot t)
     {
@@ -56,17 +59,17 @@ public sealed class PullbackHtfStrategySignal : IStrategySignalProvider
             return $"Pullback HTF 15m: RSI {t.Rsi14:0.#} fuera de zona ({MinEntryRsi:0}-{MaxEntryRsi:0}).";
         }
 
-        if (t.LastPrice <= 0m || t.EmaSlow <= 0m || t.LastPrice > t.EmaSlow)
+        if (t.LastPrice <= 0m || t.EmaSlow <= 0m || t.LastPrice > t.EmaSlow * 1.002m)
         {
-            return $"Pullback HTF 15m: precio {t.LastPrice:0.####} por encima de EMA21 {t.EmaSlow:0.####}.";
+            return $"Pullback HTF 15m: precio {t.LastPrice:0.####} lejos por encima de EMA21 {t.EmaSlow:0.####}.";
         }
 
-        if (t.MacdHistogram <= t.PreviousMacdHistogram)
+        if (t.MacdHistogram < t.PreviousMacdHistogram)
         {
-            return "Pullback HTF 15m: histograma MACD sin expansion.";
+            return "Pullback HTF 15m: histograma MACD en contraccion.";
         }
 
-        if (t.EmaFast < t.EmaSlow * 0.997m)
+        if (t.EmaFast < t.EmaSlow * 0.992m)
         {
             return "Pullback HTF 15m: EMA9 demasiado por debajo de EMA21.";
         }
@@ -81,18 +84,18 @@ public sealed class PullbackHtfStrategySignal : IStrategySignalProvider
             return "Regimen HTF: precio invalido.";
         }
 
-        if (Math.Abs(ticker.PriceChangePercent24h) >= 5.5m)
+        if (Math.Abs(ticker.PriceChangePercent24h) >= 8.0m)
         {
             return $"Regimen HTF: |Δ24h|={Math.Abs(ticker.PriceChangePercent24h):0.##}% extremo.";
         }
 
         var emaSpreadPct = Math.Abs(technical.EmaFast - technical.EmaSlow) / technical.LastPrice * 100m;
-        if (emaSpreadPct > 3.5m)
+        if (emaSpreadPct > 5.0m)
         {
             return $"Regimen HTF: separacion EMA alta ({emaSpreadPct:0.###}%).";
         }
 
-        if (technical.VolatilityPercent > 3.2m || technical.AtrPercent > 3.8m)
+        if (technical.VolatilityPercent > 4.5m || technical.AtrPercent > 5.0m)
         {
             return $"Regimen HTF: vol/ATR altos (vol%={technical.VolatilityPercent:0.##}).";
         }
@@ -110,8 +113,8 @@ public sealed class PullbackHtfStrategySignal : IStrategySignalProvider
             return null;
         }
 
-        // Permitir pullbacks en lateral/recuperacion si el precio sigue sobre EMA200 D1.
-        var aboveEma200 = regime.DailyEma200 > 0m && regime.LastClose >= regime.DailyEma200 * 0.995m;
+        // Lateral/recuperacion: precio cerca de EMA200 D1 (tolerancia mas amplia).
+        var aboveEma200 = regime.DailyEma200 > 0m && regime.LastClose >= regime.DailyEma200 * 0.97m;
         if (!regime.DailyTrendUp && !aboveEma200)
         {
             return "Regimen D1 HTF: tendencia diaria no alcista y precio bajo EMA200.";

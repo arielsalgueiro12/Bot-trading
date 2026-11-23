@@ -1284,12 +1284,12 @@ public sealed class BotService(
         }
 
         if (!structure.HasBullishFlag &&
-            structure.DistanceToResistancePercent is > 0m and < 2.5m)
+            structure.DistanceToResistancePercent is > 0m and < 1.2m)
         {
             return $"Contexto 30-90d: precio muy cerca de resistencia 90d ({structure.DistanceToResistancePercent:0.#}% de margen).";
         }
 
-        if (!structure.HasBullishFlag && structure.ContextScore <= -0.75m)
+        if (!structure.HasBullishFlag && structure.ContextScore <= -1.05m)
         {
             return $"Contexto 30-90d desfavorable ({structure.Summary}).";
         }
