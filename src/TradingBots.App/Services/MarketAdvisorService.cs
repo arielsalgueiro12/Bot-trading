@@ -22,8 +22,8 @@ public sealed class MarketAdvisorService(
     private const decimal MaxMoverChange24hPercent = 5.5m;
     private const decimal ChaseBlockChange24hPercent = 6m;
     private const decimal ChaseBlockRsi = 65m;
-    /// <summary>Umbral BUY: confianza MEDIA+ (antes 7.2 dejaba dias sin senal).</summary>
-    private const decimal BuyScoreThreshold = 5.5m;
+    /// <summary>Umbral BUY: WATCH fuerte pasa a BUY (antes 7.2/5.5 dejaba dias sin senal).</summary>
+    private const decimal BuyScoreThreshold = 4.5m;
     private const int MaxAdvisorCandidates = 48;
 
     private static readonly HashSet<string> AdvisorSymbolExclusions = new(StringComparer.Ordinal)
