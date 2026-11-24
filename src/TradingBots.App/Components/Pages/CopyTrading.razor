@@ -8,13 +8,12 @@
 
 <h1 class="tb-page-title">Copy Mirror</h1>
 <p class="tb-page-lead text-muted mb-3">
-    Dos listados y dos wallets: <strong>Spot</strong> vs <strong>Futures USD-M</strong>.
-    El ranking público de Binance Copy es Futures; el tab Spot filtra leads cuyas órdenes recientes cotizan en Spot.
+    Mirror unificado: copia <strong>LONG y SHORT</strong> igual que el lead.
+    Modo recomendado <strong>Match lead</strong> → Futures primero; Spot solo si el par no cotiza en Futures.
 </p>
 
 <div class="alert alert-secondary border-0 small mb-4" role="status">
-    <strong>Wallets (Production):</strong> Spot y Futures son billeteras distintas de la misma cuenta
-    (Transfer Spot ↔ Futures). En Sandbox son entornos separados (keys distintas).
+    Requiere keys Futures en Settings (demo.binance.com). Spot y Futures son wallets/keys distintas en Sandbox.
 </div>
 
 @if (!string.IsNullOrWhiteSpace(_error))
@@ -154,9 +153,9 @@
                 <div>
                     <label class="form-label small mb-1">Wallet / venue</label>
                     <select class="form-select form-select-sm" @bind="_form.VenueMode">
-                        <option value="@CopyMirrorVenueMode.SpotOnly">Solo Spot (wallet Spot)</option>
-                        <option value="@CopyMirrorVenueMode.FuturesOnly">Solo Futures (wallet Futures)</option>
-                        <option value="@CopyMirrorVenueMode.Auto">Auto (Spot si puede, si no Futures)</option>
+                        <option value="@CopyMirrorVenueMode.Auto">Match lead (Futures + Spot fallback)</option>
+                        <option value="@CopyMirrorVenueMode.FuturesOnly">Solo Futures</option>
+                        <option value="@CopyMirrorVenueMode.SpotOnly">Solo Spot (sin shorts)</option>
                     </select>
                     <div class="form-text">@VenueHelp(_form.VenueMode)</div>
                 </div>
@@ -187,7 +186,7 @@
                 </div>
                 <div class="form-check">
                     <input class="form-check-input" type="checkbox" id="longOnly" @bind="_form.LongOnly" />
-                    <label class="form-check-label" for="longOnly">Solo LONG (ignora shorts)</label>
+                    <label class="form-check-label" for="longOnly">Solo LONG (desactivado = copia también shorts del lead)</label>
                 </div>
 
                 <div class="d-flex flex-wrap gap-2">
@@ -408,10 +407,10 @@
     private CopyMirrorSettings _form = new()
     {
         DryRun = true,
-        LongOnly = true,
-        VenueMode = CopyMirrorVenueMode.SpotOnly,
+        LongOnly = false,
+        VenueMode = CopyMirrorVenueMode.Auto,
         FuturesLeverage = 1,
-        QuotePerTradeUsdt = 15m,
+        QuotePerTradeUsdt = 25m,
         PollIntervalMs = 3500
     };
     private BoardTab _boardTab = BoardTab.Spot;
@@ -434,12 +433,12 @@
         _form = new CopyMirrorSettings
         {
             DryRun = first?.Settings.DryRun ?? true,
-            LongOnly = first?.Settings.LongOnly ?? true,
-            VenueMode = first?.Settings.VenueMode ?? CopyMirrorVenueMode.SpotOnly,
+            LongOnly = first?.Settings.LongOnly ?? false,
+            VenueMode = first?.Settings.VenueMode ?? CopyMirrorVenueMode.Auto,
             FuturesLeverage = first is { Settings.FuturesLeverage: > 0 }
                 ? first.Settings.FuturesLeverage
                 : 1,
-            QuotePerTradeUsdt = first?.Settings.QuotePerTradeUsdt ?? 15m,
+            QuotePerTradeUsdt = first?.Settings.QuotePerTradeUsdt ?? 25m,
             PollIntervalMs = first?.Settings.PollIntervalMs ?? 3500
         };
         _uiCts = new CancellationTokenSource();
@@ -549,18 +548,14 @@
     {
         _form.LeadPortfolioId = lead.LeadPortfolioId;
         _form.LeadNickname = lead.Nickname;
-        _form.VenueMode = _boardTab == BoardTab.Spot
-            ? CopyMirrorVenueMode.SpotOnly
-            : CopyMirrorVenueMode.FuturesOnly;
-        if (_boardTab == BoardTab.Futures)
-        {
-            _form.LongOnly = false;
-        }
+        // Unificado: Match lead (Futures primero) + longs y shorts.
+        _form.VenueMode = CopyMirrorVenueMode.Auto;
+        _form.LongOnly = false;
 
         _error = null;
         _info =
             $"Lead listo: {lead.Nickname} ({ShortId(lead.LeadPortfolioId)}). " +
-            $"Venue={VenueLabel(_form.VenueMode)}. Pulsa Añadir / iniciar.";
+            $"Venue={VenueLabel(_form.VenueMode)} L/S. Pulsa Añadir / iniciar.";
     }
 
     private bool Selected(CopyLeadSummary lead) =>
@@ -631,15 +626,16 @@
     {
         CopyMirrorVenueMode.SpotOnly => "Spot",
         CopyMirrorVenueMode.FuturesOnly => "Futures",
-        CopyMirrorVenueMode.Auto => "Auto",
+        CopyMirrorVenueMode.Auto => "Match",
         _ => mode.ToString()
     };
 
     private static string VenueHelp(CopyMirrorVenueMode mode) => mode switch
     {
-        CopyMirrorVenueMode.SpotOnly => "Usa saldo Spot. Salta shorts y pares solo-Futures.",
-        CopyMirrorVenueMode.FuturesOnly => "Usa saldo Futures. Longs y shorts (si no marcas Solo LONG).",
-        CopyMirrorVenueMode.Auto => "LONG en Spot si cotiza; si no, Futures. SHORT siempre Futures.",
+        CopyMirrorVenueMode.SpotOnly => "Solo Spot: BUY/SELL long. No copia shorts.",
+        CopyMirrorVenueMode.FuturesOnly => "Solo Futures: LONG y SHORT 1:1 con el lead.",
+        CopyMirrorVenueMode.Auto =>
+            "Match lead: misma operacion (LONG/SHORT). Futures primero; Spot solo si el par no existe en Futures.",
         _ => string.Empty
     };
 

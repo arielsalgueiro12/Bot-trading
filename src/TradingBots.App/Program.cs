@@ -587,6 +587,9 @@ using (var scope = app.Services.CreateScope())
         await db.Database.ExecuteSqlRawAsync("""
             ALTER TABLE "CopyMirrorSessions" ADD COLUMN IF NOT EXISTS "VenueMode" integer NOT NULL DEFAULT 0;
             """);
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "CopyMirrorSessions" ADD COLUMN IF NOT EXISTS "OpenPositionsJson" text NOT NULL DEFAULT '';
+            """);
     }
 
     if (db.Database.IsSqlite())
@@ -604,7 +607,8 @@ using (var scope = app.Services.CreateScope())
                      """ALTER TABLE MlTradeObservations ADD COLUMN RejectReason TEXT NULL;""",
                      """ALTER TABLE CopyMirrorSessions ADD COLUMN AllowFutures INTEGER NOT NULL DEFAULT 0;""",
                      """ALTER TABLE CopyMirrorSessions ADD COLUMN FuturesLeverage INTEGER NOT NULL DEFAULT 1;""",
-                     """ALTER TABLE CopyMirrorSessions ADD COLUMN VenueMode INTEGER NOT NULL DEFAULT 0;"""
+                     """ALTER TABLE CopyMirrorSessions ADD COLUMN VenueMode INTEGER NOT NULL DEFAULT 0;""",
+                     """ALTER TABLE CopyMirrorSessions ADD COLUMN OpenPositionsJson TEXT NOT NULL DEFAULT '';"""
                  })
         {
             try

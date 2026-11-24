@@ -167,6 +167,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.LeadPortfolioId).HasMaxLength(40);
             entity.Property(x => x.LeadNickname).HasMaxLength(120);
             entity.Property(x => x.QuotePerTradeUsdt).HasColumnType("decimal(18,2)");
+            entity.Property(x => x.OpenPositionsJson).HasMaxLength(4000);
             entity.HasIndex(x => x.Enabled);
         });
     }

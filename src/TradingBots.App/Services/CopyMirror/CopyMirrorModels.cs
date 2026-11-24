@@ -44,11 +44,14 @@ public sealed class CopyLeadOrder
 /// <summary>Wallet/venue de ejecucion del mirror.</summary>
 public enum CopyMirrorVenueMode
 {
-    /// <summary>Solo wallet Spot. Ignora pares/shorts que no se puedan mapear a Spot.</summary>
+    /// <summary>Solo wallet Spot. Ignora shorts.</summary>
     SpotOnly = 0,
-    /// <summary>Solo wallet Futures USD-M (longs y shorts).</summary>
+    /// <summary>Solo wallet Futures USD-M (longs y shorts 1:1 con el lead).</summary>
     FuturesOnly = 1,
-    /// <summary>LONG: Spot si cotiza, si no Futures. SHORT: siempre Futures.</summary>
+    /// <summary>
+    /// Match lead: copia LONG/SHORT igual que el trader.
+    /// Prefiere Futures; LONG cae a Spot solo si Futures no cotiza el par.
+    /// </summary>
     Auto = 2
 }
 
@@ -56,9 +59,10 @@ public sealed class CopyMirrorSettings
 {
     public bool Enabled { get; set; }
     public bool DryRun { get; set; } = true;
-    public bool LongOnly { get; set; } = true;
-    /// <summary>Venue de ejecucion: Spot / Futures / Auto.</summary>
-    public CopyMirrorVenueMode VenueMode { get; set; } = CopyMirrorVenueMode.SpotOnly;
+    /// <summary>Si true ignora SHORT. En modo Auto/Futures se recomienda false.</summary>
+    public bool LongOnly { get; set; }
+    /// <summary>Venue: SpotOnly / FuturesOnly / Auto (match lead).</summary>
+    public CopyMirrorVenueMode VenueMode { get; set; } = CopyMirrorVenueMode.Auto;
     /// <summary>Compat: true si VenueMode permite Futures (Auto o FuturesOnly).</summary>
     public bool AllowFutures
     {
