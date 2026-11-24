@@ -112,19 +112,44 @@ else
                 <label class="form-label">Muestras minimas para entrenar modelo</label>
                 <InputNumber class="form-control mb-3" @bind-Value="_form.MlMinSamples" />
 
-                <label class="form-label">API Key</label>
+                <hr />
+                <h6>Spot API</h6>
+                <p class="small text-muted mb-2">
+                    Sandbox: <code>testnet.binance.vision</code> · Production: <code>api.binance.com</code>
+                </p>
+                <label class="form-label">API Key Spot</label>
                 <InputText class="form-control mb-2" @bind-Value="_form.ApiKey" />
 
-                <label class="form-label">API Secret</label>
+                <label class="form-label">API Secret Spot</label>
                 <InputText class="form-control mb-2" @bind-Value="_form.ApiSecret" type="password" />
 
                 @if (!string.IsNullOrWhiteSpace(_secretMasked))
                 {
-                    <div class="text-muted mb-3">Secret guardado actual: @_secretMasked</div>
+                    <div class="text-muted mb-3">Secret Spot guardado: @_secretMasked</div>
+                }
+
+                <hr />
+                <h6>Futures USD-M API</h6>
+                <p class="small text-muted mb-2">
+                    Demo: crea keys en
+                    <a href="https://demo.binance.com/en/my/settings/api-management" target="_blank" rel="noopener">demo.binance.com API Management</a>
+                    · endpoint <code>demo-fapi.binance.com</code>.
+                    Production: <code>fapi.binance.com</code>. No reutilices las keys Spot.
+                </p>
+                <label class="form-label">API Key Futures</label>
+                <InputText class="form-control mb-2" @bind-Value="_form.FuturesApiKey" />
+
+                <label class="form-label">API Secret Futures</label>
+                <InputText class="form-control mb-2" @bind-Value="_form.FuturesApiSecret" type="password" />
+
+                @if (!string.IsNullOrWhiteSpace(_futuresSecretMasked))
+                {
+                    <div class="text-muted mb-3">Secret Futures guardado: @_futuresSecretMasked</div>
                 }
 
                 <button class="btn btn-primary" type="submit">Guardar configuracion</button>
-                <button class="btn btn-outline-dark ms-2" type="button" @onclick="CheckAccountSummary">Probar conexion y balance</button>
+                <button class="btn btn-outline-dark ms-2" type="button" @onclick="CheckAccountSummary">Probar Spot</button>
+                <button class="btn btn-outline-dark ms-2" type="button" @onclick="CheckFuturesAccountSummary">Probar Futures</button>
                 <button class="btn btn-outline-warning ms-2" type="button" @onclick="ArmLiveChecklist">Armar Live (checklist)</button>
             </div>
         </div>
@@ -133,7 +158,7 @@ else
     @if (_accountSummary is not null)
     {
         <div class="card mt-3">
-            <div class="card-header">Resumen de cuenta Binance</div>
+            <div class="card-header">Resumen Spot</div>
             <div class="card-body">
                 <div><strong>Conexion:</strong> @(_accountSummary.Connected ? "OK" : "No disponible")</div>
                 <div><strong>Entorno:</strong> @_accountSummary.EnvironmentName</div>
@@ -144,6 +169,21 @@ else
                 <div><strong>FDUSD libre:</strong> @_accountSummary.FdusdFree.ToString("0.########")</div>
                 <div><strong>FDUSD bloqueado:</strong> @_accountSummary.FdusdLocked.ToString("0.########")</div>
                 <div class="text-muted">@_accountSummary.Message</div>
+            </div>
+        </div>
+    }
+
+    @if (_futuresSummary is not null)
+    {
+        <div class="card mt-3">
+            <div class="card-header">Resumen Futures USD-M</div>
+            <div class="card-body">
+                <div><strong>Conexion:</strong> @(_futuresSummary.Connected ? "OK" : "No disponible")</div>
+                <div><strong>Entorno:</strong> @_futuresSummary.EnvironmentName</div>
+                <div><strong>Base URL:</strong> @_futuresSummary.BaseUrl</div>
+                <div><strong>USDT disponible:</strong> @_futuresSummary.UsdtAvailable.ToString("0.########")</div>
+                <div><strong>USDT wallet:</strong> @_futuresSummary.UsdtWalletBalance.ToString("0.########")</div>
+                <div class="text-muted">@_futuresSummary.Message</div>
             </div>
         </div>
     }
@@ -172,9 +212,11 @@ else
 @code {
     private UpdateBinanceSettingsRequest? _form;
     private string _secretMasked = string.Empty;
+    private string _futuresSecretMasked = string.Empty;
     private string _message = string.Empty;
     private bool _isError;
     private BinanceAccountSummary? _accountSummary;
+    private BinanceFuturesAccountSummary? _futuresSummary;
     private SystemReadinessView? _readiness;
     private BinanceHealthView? _health;
 
@@ -233,6 +275,7 @@ else
         }
 
         _secretMasked = current.ApiSecretMasked;
+        _futuresSecretMasked = current.FuturesApiSecretMasked;
         _form = new UpdateBinanceSettingsRequest
         {
             IsEnabled = current.IsEnabled,
@@ -257,7 +300,9 @@ else
             MlMinWinProbability = current.MlMinWinProbability <= 0m ? 0.55m : current.MlMinWinProbability,
             MlMinSamples = current.MlMinSamples <= 0 ? 80 : current.MlMinSamples,
             ApiKey = current.ApiKey,
-            ApiSecret = string.Empty
+            ApiSecret = string.Empty,
+            FuturesApiKey = current.FuturesApiKey,
+            FuturesApiSecret = string.Empty
         };
         _readiness = await client.GetFromJsonAsync<SystemReadinessView>("/api/system/readiness");
         if (Auth.IsAuthenticated)
@@ -340,14 +385,52 @@ else
             {
                 _accountSummary = await response.Content.ReadFromJsonAsync<BinanceAccountSummary>();
                 _isError = false;
-                _message = "Consulta de cuenta completada.";
+                _message = "Consulta Spot completada.";
             }
             else
             {
                 _accountSummary = null;
                 var detail = await response.Content.ReadAsStringAsync();
                 _isError = true;
-                _message = $"No se pudo consultar cuenta (HTTP {(int)response.StatusCode}). {detail}";
+                _message = $"No se pudo consultar Spot (HTTP {(int)response.StatusCode}). {detail}";
+            }
+        }
+        finally
+        {
+            Loading.End();
+        }
+    }
+
+    private async Task CheckFuturesAccountSummary()
+    {
+        if (!Auth.IsAuthenticated)
+        {
+            _isError = true;
+            _message = "Debes iniciar sesión para consultar Futures.";
+            return;
+        }
+
+        Loading.Begin();
+        try
+        {
+            var client = HttpFactory.CreateClient();
+            client.BaseAddress = new Uri(Nav.BaseUri);
+            Auth.ApplyBearer(client);
+            var response = await client.GetAsync("/api/settings/binance/futures-account-summary");
+            if (response.IsSuccessStatusCode)
+            {
+                _futuresSummary = await response.Content.ReadFromJsonAsync<BinanceFuturesAccountSummary>();
+                _isError = !(_futuresSummary?.Connected ?? false);
+                _message = _futuresSummary?.Connected == true
+                    ? "Consulta Futures completada."
+                    : $"Futures: {_futuresSummary?.Message}";
+            }
+            else
+            {
+                _futuresSummary = null;
+                var detail = await response.Content.ReadAsStringAsync();
+                _isError = true;
+                _message = $"No se pudo consultar Futures (HTTP {(int)response.StatusCode}). {detail}";
             }
         }
         finally

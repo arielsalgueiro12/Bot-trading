@@ -9,6 +9,7 @@ namespace TradingBots.App.Services;
 public interface IBinanceFuturesExecutionService
 {
     Task<bool> IsFuturesSymbolTradableAsync(string symbol, CancellationToken ct = default);
+    Task<BinanceFuturesAccountSummary> GetAccountSummaryAsync(CancellationToken ct = default);
     string GetLastExecutionError();
     /// <summary>Abre o cierra posicion USD-M. positionSide: LONG o SHORT. open=true abre, false cierra.</summary>
     Task<TradeFillResult?> MarketPositionAsync(
@@ -36,6 +37,81 @@ public sealed class BinanceFuturesExecutionService(
 
     public string GetLastExecutionError() => _lastExecutionError;
 
+    public async Task<BinanceFuturesAccountSummary> GetAccountSummaryAsync(CancellationToken ct = default)
+    {
+        var settings = await settingsService.GetActiveSettingsAsync();
+        var envName = settings.Environment == BinanceEnvironment.Production ? "Production" : "Sandbox/Demo";
+        var baseUrl = settingsService.ResolveFuturesBaseUrl(settings);
+        if (!HasFuturesCredentials(settings))
+        {
+            return new BinanceFuturesAccountSummary
+            {
+                Connected = false,
+                EnvironmentName = envName,
+                BaseUrl = baseUrl,
+                Message = "Configura Futures API Key y Secret en Settings (demo.binance.com)."
+            };
+        }
+
+        try
+        {
+            await SyncServerTimeOffsetAsync(baseUrl, ct);
+            var query = $"recvWindow={DefaultRecvWindow}&timestamp={NowMsWithOffset()}";
+            var signature = Sign(query, settings.FuturesApiSecret);
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/fapi/v2/balance?{query}&signature={signature}");
+            request.Headers.TryAddWithoutValidation("X-MBX-APIKEY", settings.FuturesApiKey);
+            var response = await httpClient.SendAsync(request, ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                return new BinanceFuturesAccountSummary
+                {
+                    Connected = false,
+                    EnvironmentName = envName,
+                    BaseUrl = baseUrl,
+                    Message = ExtractBinanceError(body)
+                };
+            }
+
+            using var doc = JsonDocument.Parse(body);
+            decimal available = 0m;
+            decimal wallet = 0m;
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                if (!item.TryGetProperty("asset", out var asset) ||
+                    !string.Equals(asset.GetString(), "USDT", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                available = Parse(item.TryGetProperty("availableBalance", out var ab) ? ab.GetString() : "0");
+                wallet = Parse(item.TryGetProperty("balance", out var bal) ? bal.GetString() : "0");
+                break;
+            }
+
+            return new BinanceFuturesAccountSummary
+            {
+                Connected = true,
+                EnvironmentName = envName,
+                BaseUrl = baseUrl,
+                UsdtAvailable = available,
+                UsdtWalletBalance = wallet,
+                Message = "Conexion Futures OK"
+            };
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "No se pudo leer balance Futures.");
+            return new BinanceFuturesAccountSummary
+            {
+                Connected = false,
+                EnvironmentName = envName,
+                BaseUrl = baseUrl,
+                Message = ex.Message.Length > 180 ? ex.Message[..180] : ex.Message
+            };
+        }
+    }
+
     public async Task<bool> IsFuturesSymbolTradableAsync(string symbol, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(symbol))
@@ -60,7 +136,9 @@ public sealed class BinanceFuturesExecutionService(
         var settings = await settingsService.GetActiveSettingsAsync();
         if (!CanTradeReal(settings))
         {
-            _lastExecutionError = "Live trading deshabilitado por configuracion/guardas.";
+            _lastExecutionError = HasFuturesCredentials(settings)
+                ? "Live trading Futures deshabilitado por configuracion/guardas."
+                : "Configura Futures API Key y Secret en Settings (demo.binance.com).";
             return null;
         }
 
@@ -138,9 +216,9 @@ public sealed class BinanceFuturesExecutionService(
                 $"symbol={symbol}&side={side}&type=MARKET&quantity={Fmt(quantity)}" +
                 $"&positionSide={positionSide}&newClientOrderId={clientOrderId}" +
                 $"&recvWindow={DefaultRecvWindow}&timestamp={NowMsWithOffset()}";
-            var signature = Sign(query, settings.ApiSecret);
+            var signature = Sign(query, settings.FuturesApiSecret);
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/fapi/v1/order?{query}&signature={signature}");
-            request.Headers.TryAddWithoutValidation("X-MBX-APIKEY", settings.ApiKey);
+            request.Headers.TryAddWithoutValidation("X-MBX-APIKEY", settings.FuturesApiKey);
             var response = await httpClient.SendAsync(request, ct);
             var body = await response.Content.ReadAsStringAsync(ct);
             if (!response.IsSuccessStatusCode)
@@ -185,9 +263,9 @@ public sealed class BinanceFuturesExecutionService(
             var baseUrl = settingsService.ResolveFuturesBaseUrl(settings);
             await SyncServerTimeOffsetAsync(baseUrl, ct);
             var query = $"symbol={symbol}&leverage={leverage}&recvWindow={DefaultRecvWindow}&timestamp={NowMsWithOffset()}";
-            var signature = Sign(query, settings.ApiSecret);
+            var signature = Sign(query, settings.FuturesApiSecret);
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/fapi/v1/leverage?{query}&signature={signature}");
-            request.Headers.TryAddWithoutValidation("X-MBX-APIKEY", settings.ApiKey);
+            request.Headers.TryAddWithoutValidation("X-MBX-APIKEY", settings.FuturesApiKey);
             var response = await httpClient.SendAsync(request, ct);
             if (!response.IsSuccessStatusCode)
             {
@@ -213,9 +291,9 @@ public sealed class BinanceFuturesExecutionService(
             var baseUrl = settingsService.ResolveFuturesBaseUrl(settings);
             await SyncServerTimeOffsetAsync(baseUrl, ct);
             var query = $"recvWindow={DefaultRecvWindow}&timestamp={NowMsWithOffset()}";
-            var signature = Sign(query, settings.ApiSecret);
+            var signature = Sign(query, settings.FuturesApiSecret);
             using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/fapi/v1/positionSide/dual?{query}&signature={signature}");
-            request.Headers.TryAddWithoutValidation("X-MBX-APIKEY", settings.ApiKey);
+            request.Headers.TryAddWithoutValidation("X-MBX-APIKEY", settings.FuturesApiKey);
             var response = await httpClient.SendAsync(request, ct);
             var body = await response.Content.ReadAsStringAsync(ct);
             if (!response.IsSuccessStatusCode)
@@ -311,14 +389,17 @@ public sealed class BinanceFuturesExecutionService(
         }
     }
 
+    private static bool HasFuturesCredentials(BinanceConnectionSettings settings) =>
+        !string.IsNullOrWhiteSpace(settings.FuturesApiKey) &&
+        !string.IsNullOrWhiteSpace(settings.FuturesApiSecret);
+
     private static bool CanTradeReal(BinanceConnectionSettings settings) =>
         settings.IsEnabled &&
         settings.ExecutionMode == TradeExecutionMode.Live &&
         settings.LiveEnabledByChecklist &&
         !settings.GlobalKillSwitch &&
         (settings.Environment != BinanceEnvironment.Production || settings.LiveSafetyConfirmed) &&
-        !string.IsNullOrWhiteSpace(settings.ApiKey) &&
-        !string.IsNullOrWhiteSpace(settings.ApiSecret);
+        HasFuturesCredentials(settings);
 
     private static decimal NormalizeQuantity(decimal qty, decimal stepSize, decimal minQty)
     {

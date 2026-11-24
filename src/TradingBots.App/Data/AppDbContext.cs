@@ -95,6 +95,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.NeverTradedStopHours).HasDefaultValue(36);
             entity.Property(x => x.ApiKey).HasMaxLength(300);
             entity.Property(x => x.ApiSecret).HasMaxLength(300);
+            entity.Property(x => x.FuturesApiKey).HasMaxLength(300);
+            entity.Property(x => x.FuturesApiSecret).HasMaxLength(300);
         });
 
         modelBuilder.Entity<OrderAuditEvent>(entity =>

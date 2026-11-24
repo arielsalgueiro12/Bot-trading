@@ -526,6 +526,10 @@ using (var scope = app.Services.CreateScope())
         await db.Database.ExecuteSqlRawAsync(
             """ALTER TABLE "BinanceSettings" ADD COLUMN IF NOT EXISTS "NeverTradedStopHours" integer NOT NULL DEFAULT 36;""");
         await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "BinanceSettings" ADD COLUMN IF NOT EXISTS "FuturesApiKey" varchar(300) NOT NULL DEFAULT '';""");
+        await db.Database.ExecuteSqlRawAsync(
+            """ALTER TABLE "BinanceSettings" ADD COLUMN IF NOT EXISTS "FuturesApiSecret" varchar(300) NOT NULL DEFAULT '';""");
+        await db.Database.ExecuteSqlRawAsync(
             """ALTER TABLE "MlTradeObservations" ADD COLUMN IF NOT EXISTS "IsShadow" boolean NOT NULL DEFAULT FALSE;""");
         await db.Database.ExecuteSqlRawAsync(
             """ALTER TABLE "MlTradeObservations" ADD COLUMN IF NOT EXISTS "RejectReason" varchar(200) NULL;""");
@@ -594,6 +598,8 @@ using (var scope = app.Services.CreateScope())
                      """ALTER TABLE BinanceSettings ADD COLUMN BtcCrashGatePercent REAL NOT NULL DEFAULT 3;""",
                      """ALTER TABLE BinanceSettings ADD COLUMN MaxConcurrentAltPositions INTEGER NOT NULL DEFAULT 4;""",
                      """ALTER TABLE BinanceSettings ADD COLUMN NeverTradedStopHours INTEGER NOT NULL DEFAULT 36;""",
+                     """ALTER TABLE BinanceSettings ADD COLUMN FuturesApiKey TEXT NOT NULL DEFAULT '';""",
+                     """ALTER TABLE BinanceSettings ADD COLUMN FuturesApiSecret TEXT NOT NULL DEFAULT '';""",
                      """ALTER TABLE MlTradeObservations ADD COLUMN IsShadow INTEGER NOT NULL DEFAULT 0;""",
                      """ALTER TABLE MlTradeObservations ADD COLUMN RejectReason TEXT NULL;""",
                      """ALTER TABLE CopyMirrorSessions ADD COLUMN AllowFutures INTEGER NOT NULL DEFAULT 0;""",
@@ -860,6 +866,11 @@ app.MapPut("/api/settings/binance", async (UpdateBinanceSettingsRequest request,
 app.MapGet("/api/settings/binance/account-summary", async (IBinanceTradeExecutionService executionService) =>
 {
     return Results.Ok(await executionService.GetAccountSummaryAsync());
+});
+
+app.MapGet("/api/settings/binance/futures-account-summary", async (IBinanceFuturesExecutionService futuresExecution) =>
+{
+    return Results.Ok(await futuresExecution.GetAccountSummaryAsync());
 });
 
 app.MapGet("/api/settings/binance/health", async (IBinanceTradeExecutionService executionService) =>

@@ -272,6 +272,9 @@ public sealed class BinanceConnectionSettings
     public DateTime? LastAutoControlTuneUtc { get; set; }
     public string ApiKey { get; set; } = string.Empty;
     public string ApiSecret { get; set; } = string.Empty;
+    /// <summary>API Key Futures USD-M (Demo: demo.binance.com / Prod: fapi).</summary>
+    public string FuturesApiKey { get; set; } = string.Empty;
+    public string FuturesApiSecret { get; set; } = string.Empty;
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 
@@ -300,6 +303,8 @@ public sealed class UpdateBinanceSettingsRequest
     public int NeverTradedStopHours { get; set; } = 36;
     public string ApiKey { get; set; } = string.Empty;
     public string ApiSecret { get; set; } = string.Empty;
+    public string FuturesApiKey { get; set; } = string.Empty;
+    public string FuturesApiSecret { get; set; } = string.Empty;
 }
 
 public sealed class BinanceSettingsView
@@ -328,7 +333,19 @@ public sealed class BinanceSettingsView
     public DateTime? LastAutoControlTuneUtc { get; set; }
     public string ApiKey { get; set; } = string.Empty;
     public string ApiSecretMasked { get; set; } = string.Empty;
+    public string FuturesApiKey { get; set; } = string.Empty;
+    public string FuturesApiSecretMasked { get; set; } = string.Empty;
     public DateTime UpdatedAtUtc { get; set; }
+}
+
+public sealed class BinanceFuturesAccountSummary
+{
+    public bool Connected { get; set; }
+    public string EnvironmentName { get; set; } = string.Empty;
+    public string BaseUrl { get; set; } = string.Empty;
+    public decimal UsdtAvailable { get; set; }
+    public decimal UsdtWalletBalance { get; set; }
+    public string Message { get; set; } = string.Empty;
 }
 
 public sealed class LiveChecklistRequest

@@ -88,6 +88,19 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         {
             settings.ApiSecret = newSecret;
         }
+
+        var newFuturesKey = (request.FuturesApiKey ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(newFuturesKey))
+        {
+            settings.FuturesApiKey = newFuturesKey;
+        }
+
+        var newFuturesSecret = (request.FuturesApiSecret ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(newFuturesSecret))
+        {
+            settings.FuturesApiSecret = newFuturesSecret;
+        }
+
         settings.UpdatedAtUtc = DateTime.UtcNow;
         await dbContext.SaveChangesAsync();
         return ToView(settings);
@@ -115,7 +128,7 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
 
     public string ResolveFuturesBaseUrl(BinanceConnectionSettings settings) =>
         settings.Environment == BinanceEnvironment.Sandbox
-            ? "https://testnet.binancefuture.com"
+            ? "https://demo-fapi.binance.com"
             : "https://fapi.binance.com";
 
     private static BinanceSettingsView ToView(BinanceConnectionSettings settings) => new()
@@ -146,6 +159,10 @@ public sealed class BinanceSettingsService(AppDbContext dbContext) : IBinanceSet
         ApiSecretMasked = string.IsNullOrWhiteSpace(settings.ApiSecret)
             ? string.Empty
             : new string('*', Math.Min(12, settings.ApiSecret.Length)),
+        FuturesApiKey = settings.FuturesApiKey,
+        FuturesApiSecretMasked = string.IsNullOrWhiteSpace(settings.FuturesApiSecret)
+            ? string.Empty
+            : new string('*', Math.Min(12, settings.FuturesApiSecret.Length)),
         UpdatedAtUtc = settings.UpdatedAtUtc
     };
 }
