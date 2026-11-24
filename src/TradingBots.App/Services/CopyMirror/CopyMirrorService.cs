@@ -15,7 +15,10 @@ public interface ICopyMirrorService
     void Stop(string leadPortfolioId);
     int GetRecommendedDelayMs();
     Task RestorePersistedSessionsAsync(CancellationToken ct = default);
-    Task<IReadOnlyList<CopyLeadSummary>> GetLeaderboardAsync(CancellationToken ct = default);
+    Task<IReadOnlyList<CopyLeadSummary>> GetLeaderboardAsync(
+        string dataType = "PNL",
+        string nickname = "",
+        CancellationToken ct = default);
     Task<CopyLeadBoardResult> GetSpotCompatibleLeaderboardAsync(CancellationToken ct = default);
     Task PollOnceAsync(IServiceProvider scopedServices, CancellationToken ct = default);
 }
@@ -388,8 +391,14 @@ public sealed class CopyMirrorService(
         public Dictionary<string, decimal>? FutS { get; set; }
     }
 
-    public Task<IReadOnlyList<CopyLeadSummary>> GetLeaderboardAsync(CancellationToken ct = default) =>
-        leadClient.GetLeaderboardAsync(ct: ct);
+    public Task<IReadOnlyList<CopyLeadSummary>> GetLeaderboardAsync(
+        string dataType = "PNL",
+        string nickname = "",
+        CancellationToken ct = default) =>
+        leadClient.GetLeaderboardAsync(
+            dataType: string.IsNullOrWhiteSpace(dataType) ? "PNL" : dataType.Trim().ToUpperInvariant(),
+            nickname: nickname ?? "",
+            ct: ct);
 
     public async Task<CopyLeadBoardResult> GetSpotCompatibleLeaderboardAsync(CancellationToken ct = default)
     {

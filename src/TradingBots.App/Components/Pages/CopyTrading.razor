@@ -55,7 +55,7 @@
                         }
                         else
                         {
-                            <span>Ranking Futures completo → wallet <strong>Futures</strong>. Venue sugerido: Futures only (shorts/alts).</span>
+                            <span>Ranking Futures 30D. Ordena por <strong>PnL</strong> (recomendado) o busca por nick.</span>
                         }
                     </p>
                     <button class="btn btn-sm btn-outline-light flex-shrink-0" type="button"
@@ -63,6 +63,28 @@
                         @(_loadingBoard ? "Cargando..." : "Actualizar")
                     </button>
                 </div>
+                @if (_boardTab == BoardTab.Futures)
+                {
+                    <div class="d-flex flex-wrap gap-2 align-items-end px-3 pt-2">
+                        <div style="min-width:7rem">
+                            <label class="form-label small mb-1">Orden</label>
+                            <select class="form-select form-select-sm" @bind="_futuresSort">
+                                <option value="PNL">PnL 30D</option>
+                                <option value="ROI">ROI 30D</option>
+                                <option value="MDD">MDD 30D</option>
+                            </select>
+                        </div>
+                        <div class="flex-grow-1" style="min-width:10rem">
+                            <label class="form-label small mb-1">Buscar nick</label>
+                            <input class="form-control form-control-sm" @bind="_futuresNickname"
+                                   placeholder="ej. 金木爱交易 / 持久稳定" />
+                        </div>
+                        <button class="btn btn-sm btn-primary" type="button"
+                                @onclick="LoadFuturesBoardAsync" disabled="@_loadingBoard">
+                            Buscar
+                        </button>
+                    </div>
+                }
                 @if (!string.IsNullOrWhiteSpace(_boardNote))
                 {
                     <p class="small text-muted px-3 pt-2 mb-0">@_boardNote</p>
@@ -414,6 +436,8 @@
         PollIntervalMs = 3500
     };
     private BoardTab _boardTab = BoardTab.Spot;
+    private string _futuresSort = "PNL";
+    private string _futuresNickname = "";
     private bool _loadingBoard;
     private bool _starting;
     private string? _error;
@@ -509,18 +533,23 @@
         _loadingBoard = true;
         _boardTab = BoardTab.Futures;
         _error = null;
-        _boardNote = "Cargando ranking Futures...";
+        var nick = _futuresNickname?.Trim() ?? "";
+        _boardNote = string.IsNullOrWhiteSpace(nick)
+            ? $"Cargando ranking Futures por {_futuresSort}..."
+            : $"Buscando “{nick}”...";
         try
         {
-            var leads = await Mirror.GetLeaderboardAsync();
+            var leads = await Mirror.GetLeaderboardAsync(_futuresSort, nick);
             _leads.Clear();
             _leads.AddRange(leads);
-            _boardNote =
-                "Listado Futures (sin filtro Spot). Ideal con venue Solo Futures o Auto. " +
-                "Requiere saldo en wallet Futures (Production) o Futures testnet (Sandbox).";
+            _boardNote = string.IsNullOrWhiteSpace(nick)
+                ? $"Top 30D por {_futuresSort}. Match lead = Futures primero + LONG/SHORT 1:1."
+                : $"Resultados para “{nick}” (orden {_futuresSort}).";
             if (_leads.Count == 0)
             {
-                _error = "Ranking Futures vacio. Reintenta mas tarde.";
+                _error = string.IsNullOrWhiteSpace(nick)
+                    ? "Ranking Futures vacio. Reintenta o cambia el orden."
+                    : $"No hay resultados para “{nick}”. Prueba otro nick o pega el portfolio ID abajo.";
             }
         }
         catch (Exception ex)

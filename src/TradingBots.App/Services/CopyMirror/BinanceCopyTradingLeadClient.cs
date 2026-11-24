@@ -14,6 +14,7 @@ public interface IBinanceCopyTradingLeadClient
         string dataType = "ROI",
         int pageSize = 20,
         int pageNumber = 1,
+        string nickname = "",
         CancellationToken ct = default);
 
     Task<(IReadOnlyList<CopyLeadOrder> Orders, int ElapsedMs)> GetOrderHistoryAsync(
@@ -37,6 +38,7 @@ public sealed class BinanceCopyTradingLeadClient(HttpClient httpClient, ILogger<
         string dataType = "ROI",
         int pageSize = 20,
         int pageNumber = 1,
+        string nickname = "",
         CancellationToken ct = default)
     {
         EnsureBrowserHeaders();
@@ -48,7 +50,7 @@ public sealed class BinanceCopyTradingLeadClient(HttpClient httpClient, ILogger<
             dataType,
             favoriteOnly = false,
             hideFull = false,
-            nickname = "",
+            nickname = nickname?.Trim() ?? "",
             order = "DESC",
             userAsset = 0,
             portfolioType = "PUBLIC"
