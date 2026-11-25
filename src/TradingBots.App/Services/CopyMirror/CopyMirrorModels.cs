@@ -37,8 +37,9 @@ public sealed class CopyLeadOrder
     public long OrderTimeMs { get; init; }
     public long OrderUpdateTimeMs { get; init; }
 
+    /// <summary>Clave estable (sin qty/precio: si cambian, no se re-ejecuta la misma orden).</summary>
     public string Fingerprint =>
-        $"{Symbol}|{Side}|{PositionSide}|{OrderTimeMs}|{ExecutedQty.ToString(System.Globalization.CultureInfo.InvariantCulture)}|{AvgPrice.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+        $"{Symbol}|{Side}|{PositionSide}|{OrderTimeMs}|{OrderUpdateTimeMs}";
 }
 
 /// <summary>Wallet/venue de ejecucion del mirror.</summary>

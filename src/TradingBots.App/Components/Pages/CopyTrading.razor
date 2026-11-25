@@ -185,7 +185,7 @@
                 <div class="row g-2">
                     <div class="col-6">
                         <label class="form-label small mb-1">USDT por trade</label>
-                        <input class="form-control form-control-sm" type="number" min="5" step="1" @bind="_form.QuotePerTradeUsdt" />
+                        <input class="form-control form-control-sm" type="number" min="20" step="1" @bind="_form.QuotePerTradeUsdt" />
                     </div>
                     <div class="col-6">
                         <label class="form-label small mb-1">Poll (ms)</label>
@@ -432,7 +432,7 @@
         LongOnly = false,
         VenueMode = CopyMirrorVenueMode.Auto,
         FuturesLeverage = 1,
-        QuotePerTradeUsdt = 25m,
+        QuotePerTradeUsdt = 30m,
         PollIntervalMs = 3500
     };
     private BoardTab _boardTab = BoardTab.Spot;
@@ -462,7 +462,7 @@
             FuturesLeverage = first is { Settings.FuturesLeverage: > 0 }
                 ? first.Settings.FuturesLeverage
                 : 1,
-            QuotePerTradeUsdt = first?.Settings.QuotePerTradeUsdt ?? 25m,
+            QuotePerTradeUsdt = first?.Settings.QuotePerTradeUsdt ?? 30m,
             PollIntervalMs = first?.Settings.PollIntervalMs ?? 3500
         };
         _uiCts = new CancellationTokenSource();

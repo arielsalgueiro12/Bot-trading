@@ -158,6 +158,9 @@ public sealed class BinanceFuturesExecutionService(
         }
 
         decimal qty;
+        decimal? markPrice = null;
+        // Binance USD-M suele exigir >=20 USDT aunque el filtro diga menos.
+        var minNotional = Math.Max(filters.MinNotional > 0m ? filters.MinNotional : 5m, 20m);
         if (quoteIsNotional)
         {
             var price = await GetMarkPriceAsync(settings, symbol, ct);
@@ -167,14 +170,18 @@ public sealed class BinanceFuturesExecutionService(
                 return null;
             }
 
-            var notional = decimal.Round(Math.Max(quoteUsdtOrCloseQty, 0m), 8, MidpointRounding.ToZero);
-            if (notional < Math.Max(filters.MinNotional, 5m))
+            markPrice = price;
+            var requested = decimal.Round(Math.Max(quoteUsdtOrCloseQty, 0m), 8, MidpointRounding.ToZero);
+            // Auto-sube al minimo del simbolo (p.ej. BTC ~100) para que el copy no falle en OPEN.
+            var targetNotional = Math.Max(requested, minNotional);
+            if (targetNotional > requested)
             {
-                _lastExecutionError = $"Notional {Fmt(notional)} bajo minimo Futures para {symbol}.";
-                return null;
+                logger.LogInformation(
+                    "Futures {Symbol}: notional {Req} → {Target} (min {Min})",
+                    symbol, Fmt(requested), Fmt(targetNotional), Fmt(minNotional));
             }
 
-            qty = NormalizeQuantity(notional / price, filters.StepSize, filters.MinQty);
+            qty = QuantityForNotional(targetNotional, price, filters.StepSize, filters.MinQty, minNotional);
         }
         else
         {
@@ -195,7 +202,30 @@ public sealed class BinanceFuturesExecutionService(
         var side = (pos == "LONG") == open ? "BUY" : "SELL";
         var positionSideParam = dual ? pos : "BOTH";
 
-        return await SendOrderAsync(settings, symbol, side, positionSideParam, qty, ct);
+        var fill = await SendOrderAsync(settings, symbol, side, positionSideParam, qty, ct);
+        // Tras redondeo a veces queda 19.xx < 20 → Binance -4164; subir 1–3 steps y reintentar.
+        if (fill is null && quoteIsNotional && markPrice is > 0m && IsNotionalTooSmall(_lastExecutionError))
+        {
+            for (var i = 0; i < 3 && fill is null; i++)
+            {
+                qty = decimal.Round(qty + filters.StepSize, 8, MidpointRounding.AwayFromZero);
+                if (qty * markPrice.Value < minNotional)
+                {
+                    qty = QuantityForNotional(minNotional * 1.05m, markPrice.Value, filters.StepSize, filters.MinQty, minNotional);
+                }
+
+                logger.LogInformation("Futures retry notional {Symbol} qty={Qty}", symbol, Fmt(qty));
+                fill = await SendOrderAsync(settings, symbol, side, positionSideParam, qty, ct);
+            }
+        }
+
+        if (fill is not null && fill.ExecutedQuantity <= 0m)
+        {
+            _lastExecutionError = $"Orden Futures {symbol} sin fill (qty=0).";
+            return null;
+        }
+
+        return fill;
     }
 
     private async Task<TradeFillResult?> SendOrderAsync(
@@ -356,12 +386,13 @@ public sealed class BinanceFuturesExecutionService(
 
             var lot = s.Filters?.FirstOrDefault(x => x.FilterType == "LOT_SIZE");
             var marketLot = s.Filters?.FirstOrDefault(x => x.FilterType == "MARKET_LOT_SIZE");
-            var minNotional = s.Filters?.FirstOrDefault(x => x.FilterType == "MIN_NOTIONAL");
+            var minNotional = s.Filters?.FirstOrDefault(x =>
+                x.FilterType is "MIN_NOTIONAL" or "NOTIONAL");
             return new SymbolFilters
             {
                 MinQty = FirstPositive(Parse(marketLot?.MinQty), Parse(lot?.MinQty)),
                 StepSize = FirstPositive(Parse(marketLot?.StepSize), Parse(lot?.StepSize), 0.001m),
-                MinNotional = Parse(minNotional?.Notional)
+                MinNotional = FirstPositive(Parse(minNotional?.Notional), Parse(minNotional?.MinNotional), 5m)
             };
         }
         catch
@@ -405,7 +436,7 @@ public sealed class BinanceFuturesExecutionService(
     {
         if (stepSize <= 0)
         {
-            return qty;
+            return qty < minQty ? 0m : qty;
         }
 
         var steps = Math.Floor(qty / stepSize);
@@ -417,6 +448,42 @@ public sealed class BinanceFuturesExecutionService(
 
         return decimal.Round(normalized, 8, MidpointRounding.ToZero);
     }
+
+    /// <summary>Ceil a step size y asegura qty*price >= minNotional (evita -4164 tras floor).</summary>
+    private static decimal QuantityForNotional(
+        decimal notional,
+        decimal price,
+        decimal stepSize,
+        decimal minQty,
+        decimal minNotional)
+    {
+        if (price <= 0m)
+        {
+            return 0m;
+        }
+
+        var step = stepSize > 0m ? stepSize : 0.001m;
+        var raw = Math.Max(notional, minNotional) / price;
+        var steps = Math.Ceiling(raw / step);
+        var qty = decimal.Round(steps * step, 8, MidpointRounding.AwayFromZero);
+        if (minQty > 0m && qty < minQty)
+        {
+            qty = decimal.Round(Math.Ceiling(minQty / step) * step, 8, MidpointRounding.AwayFromZero);
+        }
+
+        for (var i = 0; i < 25 && qty * price < minNotional; i++)
+        {
+            qty = decimal.Round(qty + step, 8, MidpointRounding.AwayFromZero);
+        }
+
+        return qty * price >= minNotional ? qty : 0m;
+    }
+
+    private static bool IsNotionalTooSmall(string? err) =>
+        !string.IsNullOrWhiteSpace(err) &&
+        (err.Contains("-4164", StringComparison.Ordinal) ||
+         err.Contains("no smaller than", StringComparison.OrdinalIgnoreCase) ||
+         err.Contains("bajo minimo", StringComparison.OrdinalIgnoreCase));
 
     private static decimal FirstPositive(params decimal[] values)
     {
@@ -500,6 +567,7 @@ public sealed class BinanceFuturesExecutionService(
         public string MinQty { get; set; } = "0";
         public string StepSize { get; set; } = "0";
         public string Notional { get; set; } = "0";
+        public string MinNotional { get; set; } = "0";
     }
 
     private sealed class SymbolFilters

@@ -43,6 +43,8 @@ public sealed class CopyMirrorService(
         public ConcurrentDictionary<string, decimal> OpenQty { get; } = new(StringComparer.OrdinalIgnoreCase);
         public ConcurrentDictionary<string, decimal> OpenFutLong { get; } = new(StringComparer.OrdinalIgnoreCase);
         public ConcurrentDictionary<string, decimal> OpenFutShort { get; } = new(StringComparer.OrdinalIgnoreCase);
+        /// <summary>Simbolos Futures bloqueados (p.ej. TradFi sin acuerdo) — no reintentar OPEN ni contar SKIP de cierre.</summary>
+        public ConcurrentDictionary<string, string> BlockedFuturesSymbols { get; } = new(StringComparer.OrdinalIgnoreCase);
         public bool WarmingUp { get; set; }
         public DateTime? LastPollUtc { get; set; }
         public DateTime? LastSuccessUtc { get; set; }
@@ -641,6 +643,18 @@ public sealed class CopyMirrorService(
             order.Symbol, leadAction, "lead", order.ExecutedQty, order.AvgPrice, null,
             order.OrderTimeMs, detectDelayMs);
 
+        // Ordenes muy viejas (no estaban en warm-up / fingerprint cambió): no abrir ni cerrar.
+        const int maxMirrorLagMs = 15 * 60 * 1000;
+        if (detectDelayMs is > maxMirrorLagMs)
+        {
+            PushHubEvent(session, "info",
+                $"[{DisplayName(session)}] IGNORADA orden antigua {order.Symbol} " +
+                $"(lag {(detectDelayMs.Value / 1000):0}s > 15min).",
+                order.Symbol, leadAction, "lead", order.ExecutedQty, order.AvgPrice, null,
+                order.OrderTimeMs, detectDelayMs);
+            return;
+        }
+
         if (!TryMapLeadIntent(order, settings, out var intent, out var skipReason))
         {
             Interlocked.Increment(ref session.Skipped);
@@ -889,12 +903,23 @@ public sealed class CopyMirrorService(
         {
             if (!book.TryGetValue(order.Symbol, out closeQty) || closeQty <= 0m)
             {
-                Interlocked.Increment(ref session.Skipped);
-                PushHubEvent(session, "skipped",
-                    $"[{DisplayName(session)}] SKIP cierre Futures {intent.PositionSide}: sin posicion en {order.Symbol}",
-                    order.Symbol, "SKIP", "live", null, null, null, order.OrderTimeMs, detectDelayMs);
+                // Sin OPEN previo (fallo notional/TradFi/lag): no cuenta como SKIP operativo.
+                var blocked = session.BlockedFuturesSymbols.TryGetValue(order.Symbol, out var why);
+                PushHubEvent(session, "info",
+                    blocked
+                        ? $"[{DisplayName(session)}] Cierre {order.Symbol} omitido (bloqueado: {why})."
+                        : $"[{DisplayName(session)}] Cierre {intent.PositionSide} {order.Symbol} omitido: sin posicion mirror.",
+                    order.Symbol, "SELL", "live", null, null, null, order.OrderTimeMs, detectDelayMs);
                 return;
             }
+        }
+        else if (session.BlockedFuturesSymbols.TryGetValue(order.Symbol, out var blockReason))
+        {
+            PushHubEvent(session, "info",
+                $"[{DisplayName(session)}] OPEN {order.Symbol} omitido (bloqueado: {blockReason}).",
+                order.Symbol, "BUY", "live", null, null, settings.QuotePerTradeUsdt,
+                order.OrderTimeMs, detectDelayMs);
+            return;
         }
 
         var fill = await execution.MarketPositionAsync(
@@ -909,10 +934,22 @@ public sealed class CopyMirrorService(
         var action = intent.IsOpen ? "BUY" : "SELL";
         if (fill is null)
         {
+            var err = execution.GetLastExecutionError();
+            if (intent.IsOpen && IsTradFiAgreementError(err))
+            {
+                session.BlockedFuturesSymbols[order.Symbol] = "TradFi agreement (-4411)";
+                PushHubEvent(session, "info",
+                    $"[{DisplayName(session)}] {order.Symbol} bloqueado: firma TradFi-Perps en Demo Binance. " +
+                    $"No se reintentará. ({err})",
+                    order.Symbol, action, "live", null, null, settings.QuotePerTradeUsdt,
+                    order.OrderTimeMs, detectDelayMs, execDelay);
+                return;
+            }
+
             Interlocked.Increment(ref session.Skipped);
             PushHubEvent(session, "error",
                 $"[{DisplayName(session)}] Futures {(intent.IsOpen ? "OPEN" : "CLOSE")} {intent.PositionSide} " +
-                $"FALLIDA {order.Symbol}: {execution.GetLastExecutionError()}",
+                $"FALLIDA {order.Symbol}: {err}",
                 order.Symbol, action, "live",
                 intent.IsOpen ? null : closeQty, null,
                 intent.IsOpen ? settings.QuotePerTradeUsdt : null,
@@ -942,6 +979,11 @@ public sealed class CopyMirrorService(
             order.Symbol, "SELL", "live", fill.ExecutedQuantity, fill.AveragePrice, null,
             order.OrderTimeMs, detectDelayMs, execDelay);
     }
+
+    private static bool IsTradFiAgreementError(string? err) =>
+        !string.IsNullOrWhiteSpace(err) &&
+        (err.Contains("-4411", StringComparison.Ordinal) ||
+         err.Contains("TradFi", StringComparison.OrdinalIgnoreCase));
 
     private int ComputeRecommendedDelayMsUnlocked()
     {
@@ -1089,7 +1131,8 @@ public sealed class CopyMirrorService(
         FuturesLeverage = Math.Clamp(s.FuturesLeverage <= 0 ? 1 : s.FuturesLeverage, 1, 5),
         LeadPortfolioId = (s.LeadPortfolioId ?? string.Empty).Trim(),
         LeadNickname = (s.LeadNickname ?? string.Empty).Trim(),
-        QuotePerTradeUsdt = Math.Clamp(s.QuotePerTradeUsdt <= 0 ? 15m : s.QuotePerTradeUsdt, 5m, 5000m),
+        // Min 20: suelo Binance Futures; el ejecutor puede subir mas (p.ej. BTC min ~100).
+        QuotePerTradeUsdt = Math.Clamp(s.QuotePerTradeUsdt <= 0 ? 30m : s.QuotePerTradeUsdt, 20m, 5000m),
         PollIntervalMs = Math.Clamp(s.PollIntervalMs <= 0 ? 3500 : s.PollIntervalMs, 2500, 30_000)
     };
 
