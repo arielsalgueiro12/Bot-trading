@@ -1,4 +1,5 @@
 @page "/copy-trading"
+@using System.Globalization
 @using TradingBots.App.Services.CopyMirror
 @inject ICopyMirrorService Mirror
 @inject IServiceScopeFactory ScopeFactory
@@ -185,7 +186,8 @@
                 <div class="row g-2">
                     <div class="col-6">
                         <label class="form-label small mb-1">USDT por trade</label>
-                        <input class="form-control form-control-sm" type="number" min="20" step="1" @bind="_form.QuotePerTradeUsdt" />
+                        <input class="form-control form-control-sm" type="number" min="20" step="1"
+                               @bind="_form.QuotePerTradeUsdt" @bind:culture="CultureInfo.InvariantCulture" />
                     </div>
                     <div class="col-6">
                         <label class="form-label small mb-1">Poll (ms)</label>
