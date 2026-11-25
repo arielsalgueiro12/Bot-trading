@@ -272,7 +272,7 @@
                                 @VenueLabel(s.Settings.VenueMode)
                                 @if (s.Settings.VenueMode != CopyMirrorVenueMode.SpotOnly)
                                 {
-                                    <span> x@s.Settings.FuturesLeverage</span>
+                                    <span> x@(s.Settings.FuturesLeverage)</span>
                                 }
                                 <span>@(s.Settings.LongOnly ? " · L" : " · L/S")</span>
                             </td>
