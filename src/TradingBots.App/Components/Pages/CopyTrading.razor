@@ -187,11 +187,15 @@
                     <div class="col-6">
                         <label class="form-label small mb-1">USDT por trade</label>
                         <input class="form-control form-control-sm" type="number" min="20" step="1"
-                               @bind="_form.QuotePerTradeUsdt" @bind:culture="CultureInfo.InvariantCulture" />
+                               @bind="_form.QuotePerTradeUsdt"
+                               @bind:event="oninput"
+                               @bind:culture="CultureInfo.InvariantCulture" />
                     </div>
                     <div class="col-6">
                         <label class="form-label small mb-1">Poll (ms)</label>
-                        <input class="form-control form-control-sm" type="number" min="2500" step="500" @bind="_form.PollIntervalMs" />
+                        <input class="form-control form-control-sm" type="number" min="2500" step="500"
+                               @bind="_form.PollIntervalMs" @bind:event="oninput"
+                               @bind:culture="CultureInfo.InvariantCulture" />
                     </div>
                 </div>
 
@@ -200,7 +204,8 @@
                     <div>
                         <label class="form-label small mb-1">Leverage Futures (1–5)</label>
                         <input class="form-control form-control-sm" type="number" min="1" max="5" step="1"
-                               @bind="_form.FuturesLeverage" />
+                               @bind="_form.FuturesLeverage" @bind:event="oninput"
+                               @bind:culture="CultureInfo.InvariantCulture" />
                     </div>
                 }
 
@@ -605,26 +610,37 @@
         _starting = true;
         try
         {
+            // Enteros estables: evita carrera @bind onchange (click sin blur → valor viejo).
+            var quote = decimal.Round(Math.Clamp(_form.QuotePerTradeUsdt, 20m, 5000m), 0, MidpointRounding.AwayFromZero);
+            var lev = Math.Clamp(_form.FuturesLeverage <= 0 ? 1 : _form.FuturesLeverage, 1, 5);
+            var poll = Math.Clamp(_form.PollIntervalMs <= 0 ? 3500 : _form.PollIntervalMs, 2500, 30_000);
+            _form.QuotePerTradeUsdt = quote;
+            _form.FuturesLeverage = lev;
+            _form.PollIntervalMs = poll;
+
             Mirror.UpdateSettings(new CopyMirrorSettings
             {
                 Enabled = true,
                 DryRun = _form.DryRun,
                 LongOnly = _form.LongOnly,
                 VenueMode = _form.VenueMode,
-                FuturesLeverage = _form.FuturesLeverage,
+                FuturesLeverage = lev,
                 LeadPortfolioId = _form.LeadPortfolioId.Trim(),
                 LeadNickname = _form.LeadNickname,
-                QuotePerTradeUsdt = _form.QuotePerTradeUsdt,
-                PollIntervalMs = _form.PollIntervalMs
+                QuotePerTradeUsdt = quote,
+                PollIntervalMs = poll
             });
 
             using var scope = ScopeFactory.CreateScope();
             await Mirror.PollOnceAsync(scope.ServiceProvider);
 
             var st = Mirror.GetStatus();
+            var saved = st.Sessions.FirstOrDefault(x =>
+                string.Equals(x.Settings.LeadPortfolioId, _form.LeadPortfolioId.Trim(), StringComparison.Ordinal));
+            var savedQuote = saved?.Settings.QuotePerTradeUsdt ?? quote;
             _info =
-                $"Mirror {(_form.DryRun ? "DRY-RUN" : "LIVE")} [{VenueLabel(_form.VenueMode)}] añadido. " +
-                $"Activos={st.ActiveCount}/{st.MaxConcurrent}. " +
+                $"Mirror {(_form.DryRun ? "DRY-RUN" : "LIVE")} [{VenueLabel(_form.VenueMode)}] " +
+                $"{savedQuote:0} USDT/trade x{lev}. Activos={st.ActiveCount}/{st.MaxConcurrent}. " +
                 (string.IsNullOrWhiteSpace(st.LastError) ? "Warm-up/eventos abajo." : $"Aviso: {st.LastError}");
         }
         catch (Exception ex)
