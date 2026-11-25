@@ -144,9 +144,7 @@ public sealed class CopyMirrorService(
             if (normalized.Enabled && (!wasEnabled || !leadSame || session.Seen.IsEmpty))
             {
                 session.Seen.Clear();
-                session.OpenQty.Clear();
-                session.OpenFutLong.Clear();
-                session.OpenFutShort.Clear();
+                // No borrar OpenFut*: hace falta para cerrar tras reinicio; se re-sincroniza en warm-up.
                 session.WarmingUp = true;
                 session.FailStreak = 0;
                 session.LastError = string.Empty;
@@ -582,8 +580,11 @@ public sealed class CopyMirrorService(
                     session.WarmingUp = false;
                 }
 
+                var futExec = scopedServices.GetRequiredService<IBinanceFuturesExecutionService>();
+                var synced = await SyncFuturesBooksFromExchangeAsync(session, futExec, ct);
                 PushHubEvent(session, "info",
-                    $"Warm-up OK [{DisplayName(session)}]: {session.Seen.Count} ordenes historicas marcadas.");
+                    $"Warm-up OK [{DisplayName(session)}]: {session.Seen.Count} ordenes historicas marcadas" +
+                    (synced > 0 ? $", {synced} posicion(es) Futures sincronizadas desde exchange." : "."));
                 return;
             }
 
@@ -670,12 +671,12 @@ public sealed class CopyMirrorService(
         var venue = await ResolveVenueAsync(session, order.Symbol, intent, settings, spotExec, futExec, ct);
         if (venue is null)
         {
-            Interlocked.Increment(ref session.Skipped);
-            PushHubEvent(session, "skipped",
-                $"[{DisplayName(session)}] SKIP {order.Symbol}: sin venue Spot/Futures disponible " +
+            // Tipico en Demo: par TradFi/nuevo que no existe en demo-fapi (p.ej. SNDK).
+            PushHubEvent(session, "info",
+                $"[{DisplayName(session)}] {order.Symbol} omitido: no cotiza en esta wallet Futures " +
                 $"(Venue={settings.VenueMode}).",
-                order.Symbol, "SKIP", settings.DryRun ? "dryrun" : "live", order.ExecutedQty, order.AvgPrice, null,
-                order.OrderTimeMs, detectDelayMs);
+                order.Symbol, intent.IsOpen ? "BUY" : "SELL", settings.DryRun ? "dryrun" : "live",
+                order.ExecutedQty, order.AvgPrice, null, order.OrderTimeMs, detectDelayMs);
             return;
         }
 
@@ -901,14 +902,29 @@ public sealed class CopyMirrorService(
         decimal closeQty = 0m;
         if (!intent.IsOpen)
         {
-            if (!book.TryGetValue(order.Symbol, out closeQty) || closeQty <= 0m)
+            book.TryGetValue(order.Symbol, out closeQty);
+            if (closeQty <= 0m)
             {
-                // Sin OPEN previo (fallo notional/TradFi/lag): no cuenta como SKIP operativo.
+                // Libro vacio tras deploy/warm-up: cerrar lo que haya en el exchange.
+                closeQty = await execution.GetPositionQuantityAsync(order.Symbol, intent.PositionSide, ct);
+                if (closeQty > 0m)
+                {
+                    book[order.Symbol] = closeQty;
+                    PushHubEvent(session, "info",
+                        $"[{DisplayName(session)}] Cierre {intent.PositionSide} {order.Symbol}: " +
+                        $"qty={Fmt(closeQty)} tomada del exchange (libro mirror vacio).",
+                        order.Symbol, "SELL", "live", closeQty, null, null, order.OrderTimeMs, detectDelayMs);
+                }
+            }
+
+            if (closeQty <= 0m)
+            {
                 var blocked = session.BlockedFuturesSymbols.TryGetValue(order.Symbol, out var why);
                 PushHubEvent(session, "info",
                     blocked
                         ? $"[{DisplayName(session)}] Cierre {order.Symbol} omitido (bloqueado: {why})."
-                        : $"[{DisplayName(session)}] Cierre {intent.PositionSide} {order.Symbol} omitido: sin posicion mirror.",
+                        : $"[{DisplayName(session)}] Cierre {intent.PositionSide} {order.Symbol} omitido: " +
+                          "sin posicion en mirror ni en exchange.",
                     order.Symbol, "SELL", "live", null, null, null, order.OrderTimeMs, detectDelayMs);
                 return;
             }
@@ -984,6 +1000,57 @@ public sealed class CopyMirrorService(
         !string.IsNullOrWhiteSpace(err) &&
         (err.Contains("-4411", StringComparison.Ordinal) ||
          err.Contains("TradFi", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Alinea el libro mirror con posiciones reales en Futures (tras deploy / warm-up)
+    /// para poder cerrar cuando el lead cierre.
+    /// </summary>
+    private async Task<int> SyncFuturesBooksFromExchangeAsync(
+        MirrorSession session,
+        IBinanceFuturesExecutionService futExec,
+        CancellationToken ct)
+    {
+        try
+        {
+            var positions = await futExec.GetOpenPositionsAsync(ct);
+            if (positions.Count == 0)
+            {
+                return 0;
+            }
+
+            var added = 0;
+            foreach (var p in positions)
+            {
+                if (p.Quantity <= 0m)
+                {
+                    continue;
+                }
+
+                var book = p.PositionSide == "SHORT" ? session.OpenFutShort : session.OpenFutLong;
+                if (!book.ContainsKey(p.Symbol))
+                {
+                    book[p.Symbol] = p.Quantity;
+                    added++;
+                }
+                else
+                {
+                    book[p.Symbol] = p.Quantity;
+                }
+            }
+
+            if (added > 0 || positions.Count > 0)
+            {
+                PersistOpenPositions(session);
+            }
+
+            return positions.Count;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Sync Futures books falló lead={Lead}", session.Settings.LeadPortfolioId);
+            return 0;
+        }
+    }
 
     private int ComputeRecommendedDelayMsUnlocked()
     {

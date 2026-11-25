@@ -11,6 +11,10 @@ public interface IBinanceFuturesExecutionService
     Task<bool> IsFuturesSymbolTradableAsync(string symbol, CancellationToken ct = default);
     Task<BinanceFuturesAccountSummary> GetAccountSummaryAsync(CancellationToken ct = default);
     string GetLastExecutionError();
+    /// <summary>Qty absoluta abierta en exchange para LONG o SHORT (0 si no hay).</summary>
+    Task<decimal> GetPositionQuantityAsync(string symbol, string positionSide, CancellationToken ct = default);
+    /// <summary>Todas las posiciones Futures abiertas (qty &gt; 0).</summary>
+    Task<IReadOnlyList<FuturesOpenPosition>> GetOpenPositionsAsync(CancellationToken ct = default);
     /// <summary>Abre o cierra posicion USD-M. positionSide: LONG o SHORT. open=true abre, false cierra.</summary>
     Task<TradeFillResult?> MarketPositionAsync(
         string symbol,
@@ -21,6 +25,8 @@ public interface IBinanceFuturesExecutionService
         int leverage,
         CancellationToken ct = default);
 }
+
+public sealed record FuturesOpenPosition(string Symbol, string PositionSide, decimal Quantity);
 
 /// <summary>Ejecucion minima USD-M para Copy Mirror (market + hedge/one-way).</summary>
 public sealed class BinanceFuturesExecutionService(
@@ -122,6 +128,89 @@ public sealed class BinanceFuturesExecutionService(
         var settings = await settingsService.GetActiveSettingsAsync();
         var filters = await GetExchangeInfoAsync(settings, symbol.Trim().ToUpperInvariant(), ct);
         return filters is not null;
+    }
+
+    public async Task<decimal> GetPositionQuantityAsync(string symbol, string positionSide, CancellationToken ct = default)
+    {
+        symbol = (symbol ?? string.Empty).Trim().ToUpperInvariant();
+        var pos = (positionSide ?? "LONG").Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(symbol) || pos is not ("LONG" or "SHORT"))
+        {
+            return 0m;
+        }
+
+        var open = await GetOpenPositionsAsync(ct);
+        return open.FirstOrDefault(p =>
+            string.Equals(p.Symbol, symbol, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(p.PositionSide, pos, StringComparison.OrdinalIgnoreCase))?.Quantity ?? 0m;
+    }
+
+    public async Task<IReadOnlyList<FuturesOpenPosition>> GetOpenPositionsAsync(CancellationToken ct = default)
+    {
+        var settings = await settingsService.GetActiveSettingsAsync();
+        if (!HasFuturesCredentials(settings))
+        {
+            return [];
+        }
+
+        try
+        {
+            var baseUrl = settingsService.ResolveFuturesBaseUrl(settings);
+            await SyncServerTimeOffsetAsync(baseUrl, ct);
+            var query = $"recvWindow={DefaultRecvWindow}&timestamp={NowMsWithOffset()}";
+            var signature = Sign(query, settings.FuturesApiSecret);
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/fapi/v2/positionRisk?{query}&signature={signature}");
+            request.Headers.TryAddWithoutValidation("X-MBX-APIKEY", settings.FuturesApiKey);
+            var response = await httpClient.SendAsync(request, ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                logger.LogDebug("positionRisk fail: {Err}", ExtractBinanceError(body));
+                return [];
+            }
+
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return [];
+            }
+
+            var list = new List<FuturesOpenPosition>();
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                var sym = item.TryGetProperty("symbol", out var s) ? s.GetString() ?? "" : "";
+                var amt = Parse(item.TryGetProperty("positionAmt", out var a) ? a.GetString() : "0");
+                if (string.IsNullOrWhiteSpace(sym) || amt == 0m)
+                {
+                    continue;
+                }
+
+                var sideRaw = item.TryGetProperty("positionSide", out var ps) ? ps.GetString() ?? "BOTH" : "BOTH";
+                string side;
+                if (string.Equals(sideRaw, "LONG", StringComparison.OrdinalIgnoreCase))
+                {
+                    side = "LONG";
+                }
+                else if (string.Equals(sideRaw, "SHORT", StringComparison.OrdinalIgnoreCase))
+                {
+                    side = "SHORT";
+                }
+                else
+                {
+                    // one-way: amt>0 long, amt<0 short
+                    side = amt > 0m ? "LONG" : "SHORT";
+                }
+
+                list.Add(new FuturesOpenPosition(sym.ToUpperInvariant(), side, Math.Abs(amt)));
+            }
+
+            return list;
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "GetOpenPositionsAsync failed");
+            return [];
+        }
     }
 
     public async Task<TradeFillResult?> MarketPositionAsync(
