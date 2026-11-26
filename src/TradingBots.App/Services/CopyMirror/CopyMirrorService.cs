@@ -85,7 +85,7 @@ public sealed class CopyMirrorService(
                 RecentEvents = _hubEvents.Reverse().Take(80).ToList(),
                 RecentMovements = _hubEvents
                     .Reverse()
-                    .Where(e => e.IsMovement && e.Action is "BUY" or "SELL" or "SKIP")
+                    .Where(e => e.IsMovement && e.Action is "BUY" or "SELL")
                     .Take(60)
                     .ToList(),
                 Settings = primary?.Settings ?? new CopyMirrorSettings(),
@@ -658,10 +658,9 @@ public sealed class CopyMirrorService(
 
         if (!TryMapLeadIntent(order, settings, out var intent, out var skipReason))
         {
-            Interlocked.Increment(ref session.Skipped);
-            PushHubEvent(session, "skipped",
-                $"[{DisplayName(session)}] SKIP {skipReason}: {order.Symbol}",
-                order.Symbol, "SKIP", "lead", order.ExecutedQty, order.AvgPrice, null,
+            PushHubEvent(session, "info",
+                $"[{DisplayName(session)}] {order.Symbol} omitido ({skipReason}).",
+                order.Symbol, leadAction, "lead", order.ExecutedQty, order.AvgPrice, null,
                 order.OrderTimeMs, detectDelayMs);
             return;
         }
@@ -841,9 +840,8 @@ public sealed class CopyMirrorService(
             var execDelay = (int)(DateTime.UtcNow - execStart).TotalMilliseconds;
             if (fill is null)
             {
-                Interlocked.Increment(ref session.Skipped);
-                PushHubEvent(session, "error",
-                    $"[{DisplayName(session)}] COMPRA Spot FALLIDA {order.Symbol}: {execution.GetLastExecutionError()}",
+                PushHubEvent(session, "info",
+                    $"[{DisplayName(session)}] COMPRA Spot no ejecutada {order.Symbol}: {execution.GetLastExecutionError()}",
                     order.Symbol, "BUY", "live", null, null, settings.QuotePerTradeUsdt,
                     order.OrderTimeMs, detectDelayMs, execDelay);
                 return;
@@ -861,10 +859,9 @@ public sealed class CopyMirrorService(
 
         if (!session.OpenQty.TryGetValue(order.Symbol, out var qty) || qty <= 0m)
         {
-            Interlocked.Increment(ref session.Skipped);
-            PushHubEvent(session, "skipped",
-                $"[{DisplayName(session)}] SKIP VENTA Spot: sin posicion mirror en {order.Symbol}",
-                order.Symbol, "SKIP", "live", null, null, null, order.OrderTimeMs, detectDelayMs);
+            PushHubEvent(session, "info",
+                $"[{DisplayName(session)}] Venta Spot omitida {order.Symbol}: sin posicion de este mirror.",
+                order.Symbol, "SELL", "live", null, null, null, order.OrderTimeMs, detectDelayMs);
             return;
         }
 
@@ -872,9 +869,8 @@ public sealed class CopyMirrorService(
         var sellExecDelay = (int)(DateTime.UtcNow - execStart).TotalMilliseconds;
         if (sellFill is null)
         {
-            Interlocked.Increment(ref session.Skipped);
-            PushHubEvent(session, "error",
-                $"[{DisplayName(session)}] VENTA Spot FALLIDA {order.Symbol}: {execution.GetLastExecutionError()}",
+            PushHubEvent(session, "info",
+                $"[{DisplayName(session)}] VENTA Spot no ejecutada {order.Symbol}: {execution.GetLastExecutionError()}",
                 order.Symbol, "SELL", "live", qty, null, null, order.OrderTimeMs, detectDelayMs, sellExecDelay);
             return;
         }
@@ -902,21 +898,8 @@ public sealed class CopyMirrorService(
         decimal closeQty = 0m;
         if (!intent.IsOpen)
         {
+            // Solo cierra lo que ESTE mirror abrio (no robar posiciones de otros mirrors).
             book.TryGetValue(order.Symbol, out closeQty);
-            if (closeQty <= 0m)
-            {
-                // Libro vacio tras deploy/warm-up: cerrar lo que haya en el exchange.
-                closeQty = await execution.GetPositionQuantityAsync(order.Symbol, intent.PositionSide, ct);
-                if (closeQty > 0m)
-                {
-                    book[order.Symbol] = closeQty;
-                    PushHubEvent(session, "info",
-                        $"[{DisplayName(session)}] Cierre {intent.PositionSide} {order.Symbol}: " +
-                        $"qty={Fmt(closeQty)} tomada del exchange (libro mirror vacio).",
-                        order.Symbol, "SELL", "live", closeQty, null, null, order.OrderTimeMs, detectDelayMs);
-                }
-            }
-
             if (closeQty <= 0m)
             {
                 var blocked = session.BlockedFuturesSymbols.TryGetValue(order.Symbol, out var why);
@@ -924,10 +907,26 @@ public sealed class CopyMirrorService(
                     blocked
                         ? $"[{DisplayName(session)}] Cierre {order.Symbol} omitido (bloqueado: {why})."
                         : $"[{DisplayName(session)}] Cierre {intent.PositionSide} {order.Symbol} omitido: " +
-                          "sin posicion en mirror ni en exchange.",
+                          "este mirror no tiene posicion abierta.",
                     order.Symbol, "SELL", "live", null, null, null, order.OrderTimeMs, detectDelayMs);
                 return;
             }
+
+            // Cap a lo que quede en exchange (por si otro proceso redujo).
+            var live = await execution.GetPositionQuantityAsync(order.Symbol, intent.PositionSide, ct);
+            if (live <= 0m)
+            {
+                book.TryRemove(order.Symbol, out _);
+                PersistOpenPositions(session);
+                Interlocked.Increment(ref session.MirroredSells);
+                PushHubEvent(session, "executed",
+                    $"[{DisplayName(session)}] CLOSE Futures {intent.PositionSide} {order.Symbol} " +
+                    $"(ya flat en exchange).",
+                    order.Symbol, "SELL", "live", closeQty, null, null, order.OrderTimeMs, detectDelayMs);
+                return;
+            }
+
+            closeQty = Math.Min(closeQty, live);
         }
         else if (session.BlockedFuturesSymbols.TryGetValue(order.Symbol, out var blockReason))
         {
@@ -962,10 +961,27 @@ public sealed class CopyMirrorService(
                 return;
             }
 
-            Interlocked.Increment(ref session.Skipped);
-            PushHubEvent(session, "error",
+            // Sin SKIP: si el cierre dejo flat, contar como cerrado; si no, info.
+            if (!intent.IsOpen)
+            {
+                var liveAfter = await execution.GetPositionQuantityAsync(order.Symbol, intent.PositionSide, ct);
+                if (liveAfter <= 0m)
+                {
+                    book.TryRemove(order.Symbol, out _);
+                    PersistOpenPositions(session);
+                    Interlocked.Increment(ref session.MirroredSells);
+                    PushHubEvent(session, "executed",
+                        $"[{DisplayName(session)}] CLOSE Futures {intent.PositionSide} {order.Symbol} " +
+                        $"(confirmado flat tras intento). {err}",
+                        order.Symbol, "SELL", "live", closeQty, null, null,
+                        order.OrderTimeMs, detectDelayMs, execDelay);
+                    return;
+                }
+            }
+
+            PushHubEvent(session, "info",
                 $"[{DisplayName(session)}] Futures {(intent.IsOpen ? "OPEN" : "CLOSE")} {intent.PositionSide} " +
-                $"FALLIDA {order.Symbol}: {err}",
+                $"{order.Symbol} no ejecutada: {err}",
                 order.Symbol, action, "live",
                 intent.IsOpen ? null : closeQty, null,
                 intent.IsOpen ? settings.QuotePerTradeUsdt : null,
@@ -1018,32 +1034,51 @@ public sealed class CopyMirrorService(
                 return 0;
             }
 
-            var added = 0;
+            // Solo refresca simbolos que ESTE mirror ya tiene en libro (no heredar trades de otros).
+            var refreshed = 0;
             foreach (var p in positions)
             {
-                if (p.Quantity <= 0m)
+                var book = p.PositionSide == "SHORT" ? session.OpenFutShort : session.OpenFutLong;
+                if (!book.ContainsKey(p.Symbol))
                 {
                     continue;
                 }
 
-                var book = p.PositionSide == "SHORT" ? session.OpenFutShort : session.OpenFutLong;
-                if (!book.ContainsKey(p.Symbol))
+                if (p.Quantity <= 0m)
                 {
-                    book[p.Symbol] = p.Quantity;
-                    added++;
+                    book.TryRemove(p.Symbol, out _);
                 }
                 else
                 {
-                    book[p.Symbol] = p.Quantity;
+                    book[p.Symbol] = Math.Min(book[p.Symbol], p.Quantity);
+                }
+
+                refreshed++;
+            }
+
+            // Simbolos en libro que ya no estan en exchange → limpiar.
+            foreach (var book in new[] { session.OpenFutLong, session.OpenFutShort })
+            {
+                foreach (var sym in book.Keys.ToList())
+                {
+                    var side = ReferenceEquals(book, session.OpenFutShort) ? "SHORT" : "LONG";
+                    if (!positions.Any(p =>
+                            string.Equals(p.Symbol, sym, StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(p.PositionSide, side, StringComparison.OrdinalIgnoreCase) &&
+                            p.Quantity > 0m))
+                    {
+                        book.TryRemove(sym, out _);
+                        refreshed++;
+                    }
                 }
             }
 
-            if (added > 0 || positions.Count > 0)
+            if (refreshed > 0)
             {
                 PersistOpenPositions(session);
             }
 
-            return positions.Count;
+            return refreshed;
         }
         catch (Exception ex)
         {

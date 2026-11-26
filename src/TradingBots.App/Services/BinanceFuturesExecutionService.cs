@@ -291,7 +291,8 @@ public sealed class BinanceFuturesExecutionService(
         var side = (pos == "LONG") == open ? "BUY" : "SELL";
         var positionSideParam = dual ? pos : "BOTH";
 
-        var fill = await SendOrderAsync(settings, symbol, side, positionSideParam, qty, ct);
+        var posBefore = await GetPositionQuantityAsync(symbol, pos, ct);
+        var fill = await SendOrderAsync(settings, symbol, side, positionSideParam, qty, reduceOnly: !open, ct);
         // Tras redondeo a veces queda 19.xx < 20 → Binance -4164; subir 1–3 steps y reintentar.
         if (fill is null && quoteIsNotional && markPrice is > 0m && IsNotionalTooSmall(_lastExecutionError))
         {
@@ -304,17 +305,89 @@ public sealed class BinanceFuturesExecutionService(
                 }
 
                 logger.LogInformation("Futures retry notional {Symbol} qty={Qty}", symbol, Fmt(qty));
-                fill = await SendOrderAsync(settings, symbol, side, positionSideParam, qty, ct);
+                fill = await SendOrderAsync(settings, symbol, side, positionSideParam, qty, reduceOnly: !open, ct);
             }
         }
 
-        if (fill is not null && fill.ExecutedQuantity <= 0m)
+        if (fill is null)
         {
+            return null;
+        }
+
+        // Demo a veces responde HTTP 200 con executedQty=0: recuperar por poll / delta de posicion.
+        if (fill.ExecutedQuantity <= 0m)
+        {
+            fill = await RecoverFillFromPositionAsync(
+                settings, symbol, pos, open, qty, posBefore, markPrice, ct) ?? fill;
+        }
+
+        if (fill.ExecutedQuantity <= 0m)
+        {
+            // Cierre: si ya no hay posicion, tratar como exito (otro mirror/cierre previo).
+            if (!open)
+            {
+                var live = await GetPositionQuantityAsync(symbol, pos, ct);
+                if (live <= 0m)
+                {
+                    return new TradeFillResult
+                    {
+                        ExecutedQuantity = qty,
+                        AveragePrice = markPrice ?? 0m
+                    };
+                }
+            }
+
             _lastExecutionError = $"Orden Futures {symbol} sin fill (qty=0).";
             return null;
         }
 
         return fill;
+    }
+
+    private async Task<TradeFillResult?> RecoverFillFromPositionAsync(
+        BinanceConnectionSettings settings,
+        string symbol,
+        string positionSide,
+        bool open,
+        decimal requestedQty,
+        decimal posBefore,
+        decimal? markPrice,
+        CancellationToken ct)
+    {
+        await Task.Delay(350, ct);
+        var live = await GetPositionQuantityAsync(symbol, positionSide, ct);
+        var px = markPrice is > 0m
+            ? markPrice.Value
+            : await GetMarkPriceAsync(settings, symbol, ct);
+
+        if (open)
+        {
+            var delta = live - posBefore;
+            if (delta > 0m)
+            {
+                return new TradeFillResult { ExecutedQuantity = delta, AveragePrice = px };
+            }
+
+            if (live > 0m && posBefore <= 0m)
+            {
+                return new TradeFillResult { ExecutedQuantity = live, AveragePrice = px };
+            }
+        }
+        else
+        {
+            var closed = posBefore - live;
+            if (closed > 0m)
+            {
+                return new TradeFillResult { ExecutedQuantity = closed, AveragePrice = px };
+            }
+
+            if (live <= 0m && posBefore > 0m)
+            {
+                return new TradeFillResult { ExecutedQuantity = posBefore, AveragePrice = px };
+            }
+        }
+
+        return null;
     }
 
     private async Task<TradeFillResult?> SendOrderAsync(
@@ -323,6 +396,7 @@ public sealed class BinanceFuturesExecutionService(
         string side,
         string positionSide,
         decimal quantity,
+        bool reduceOnly,
         CancellationToken ct)
     {
         try
@@ -334,6 +408,7 @@ public sealed class BinanceFuturesExecutionService(
             var query =
                 $"symbol={symbol}&side={side}&type=MARKET&quantity={Fmt(quantity)}" +
                 $"&positionSide={positionSide}&newClientOrderId={clientOrderId}" +
+                (reduceOnly && positionSide is "BOTH" ? "&reduceOnly=true" : "") +
                 $"&recvWindow={DefaultRecvWindow}&timestamp={NowMsWithOffset()}";
             var signature = Sign(query, settings.FuturesApiSecret);
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/fapi/v1/order?{query}&signature={signature}");
@@ -354,18 +429,47 @@ public sealed class BinanceFuturesExecutionService(
                 return null;
             }
 
-            var qty = Parse(order.ExecutedQty);
-            var avg = Parse(order.AvgPrice);
-            if (avg <= 0m && qty > 0m && !string.IsNullOrWhiteSpace(order.CumQuote))
+            var fill = ParseFill(order, quantity);
+            if (fill.ExecutedQuantity > 0m)
             {
-                avg = Parse(order.CumQuote) / qty;
+                return fill;
             }
 
-            return new TradeFillResult
+            // Poll orden: Demo a veces confirma despues.
+            var orderIdStr = order.OrderId > 0 ? order.OrderId.ToString(CultureInfo.InvariantCulture) : null;
+            if (!string.IsNullOrWhiteSpace(orderIdStr) || !string.IsNullOrWhiteSpace(order.ClientOrderId))
             {
-                ExecutedQuantity = qty,
-                AveragePrice = avg
-            };
+                for (var i = 0; i < 6; i++)
+                {
+                    await Task.Delay(250, ct);
+                    var polled = await GetOrderAsync(settings, baseUrl, symbol, orderIdStr, order.ClientOrderId, ct);
+                    if (polled is null)
+                    {
+                        continue;
+                    }
+
+                    fill = ParseFill(polled, quantity);
+                    if (fill.ExecutedQuantity > 0m ||
+                        string.Equals(polled.Status, "FILLED", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(polled.Status, "CANCELED", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(polled.Status, "EXPIRED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (fill.ExecutedQuantity <= 0m &&
+                            string.Equals(polled.Status, "FILLED", StringComparison.OrdinalIgnoreCase))
+                        {
+                            fill = new TradeFillResult
+                            {
+                                ExecutedQuantity = quantity,
+                                AveragePrice = fill.AveragePrice
+                            };
+                        }
+
+                        return fill;
+                    }
+                }
+            }
+
+            return fill;
         }
         catch (Exception ex)
         {
@@ -373,6 +477,68 @@ public sealed class BinanceFuturesExecutionService(
             logger.LogWarning(ex, "Error orden Futures {Symbol}", symbol);
             return null;
         }
+    }
+
+    private async Task<FuturesOrderResponse?> GetOrderAsync(
+        BinanceConnectionSettings settings,
+        string baseUrl,
+        string symbol,
+        string? orderId,
+        string? clientOrderId,
+        CancellationToken ct)
+    {
+        try
+        {
+            await SyncServerTimeOffsetAsync(baseUrl, ct);
+            var idPart = !string.IsNullOrWhiteSpace(orderId)
+                ? $"orderId={orderId}"
+                : $"origClientOrderId={Uri.EscapeDataString(clientOrderId!)}";
+            var query = $"symbol={symbol}&{idPart}&recvWindow={DefaultRecvWindow}&timestamp={NowMsWithOffset()}";
+            var signature = Sign(query, settings.FuturesApiSecret);
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"{baseUrl}/fapi/v1/order?{query}&signature={signature}");
+            request.Headers.TryAddWithoutValidation("X-MBX-APIKEY", settings.FuturesApiKey);
+            var response = await httpClient.SendAsync(request, ct);
+            var body = await response.Content.ReadAsStringAsync(ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            return JsonSerializer.Deserialize<FuturesOrderResponse>(body, JsonOpts());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static TradeFillResult ParseFill(FuturesOrderResponse order, decimal fallbackQty)
+    {
+        var qty = Parse(order.ExecutedQty);
+        var avg = Parse(order.AvgPrice);
+        var cum = Parse(order.CumQuote);
+        if (avg <= 0m && qty > 0m && cum > 0m)
+        {
+            avg = cum / qty;
+        }
+
+        if (qty <= 0m && cum > 0m && avg > 0m)
+        {
+            qty = decimal.Round(cum / avg, 8, MidpointRounding.ToZero);
+        }
+
+        if (qty <= 0m &&
+            string.Equals(order.Status, "FILLED", StringComparison.OrdinalIgnoreCase) &&
+            fallbackQty > 0m)
+        {
+            qty = fallbackQty;
+        }
+
+        return new TradeFillResult
+        {
+            ExecutedQuantity = qty,
+            AveragePrice = avg
+        };
     }
 
     private async Task TrySetLeverageAsync(BinanceConnectionSettings settings, string symbol, int leverage, CancellationToken ct)
@@ -633,6 +799,10 @@ public sealed class BinanceFuturesExecutionService(
 
     private sealed class FuturesOrderResponse
     {
+        public long OrderId { get; set; }
+        public string ClientOrderId { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public string OrigQty { get; set; } = "0";
         public string ExecutedQty { get; set; } = "0";
         public string AvgPrice { get; set; } = "0";
         public string CumQuote { get; set; } = "0";
