@@ -989,6 +989,19 @@ public sealed class CopyMirrorService(
             return;
         }
 
+        // Evidencia: nunca registrar executed con qty=0.
+        if (fill.ExecutedQuantity <= 0m)
+        {
+            PushHubEvent(session, "info",
+                $"[{DisplayName(session)}] Futures {(intent.IsOpen ? "OPEN" : "CLOSE")} {intent.PositionSide} " +
+                $"{order.Symbol} descartada: fill sin qty verificable.",
+                order.Symbol, action, "live",
+                intent.IsOpen ? null : closeQty, null,
+                intent.IsOpen ? settings.QuotePerTradeUsdt : null,
+                order.OrderTimeMs, detectDelayMs, execDelay);
+            return;
+        }
+
         if (intent.IsOpen)
         {
             book.AddOrUpdate(order.Symbol, fill.ExecutedQuantity, (_, cur) => cur + fill.ExecutedQuantity);

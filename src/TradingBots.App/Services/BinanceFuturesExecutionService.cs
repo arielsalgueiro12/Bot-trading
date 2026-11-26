@@ -315,33 +315,95 @@ public sealed class BinanceFuturesExecutionService(
         }
 
         // Demo a veces responde HTTP 200 con executedQty=0: recuperar por poll / delta de posicion.
-        if (fill.ExecutedQuantity <= 0m)
-        {
-            fill = await RecoverFillFromPositionAsync(
-                settings, symbol, pos, open, qty, posBefore, markPrice, ct) ?? fill;
-        }
+        fill = await EnsureCompleteFillAsync(
+            settings, symbol, pos, open, qty, posBefore, markPrice, fill, side, positionSideParam, ct);
 
-        if (fill.ExecutedQuantity <= 0m)
+        if (fill is null || fill.ExecutedQuantity <= 0m)
         {
-            // Cierre: si ya no hay posicion, tratar como exito (otro mirror/cierre previo).
-            if (!open)
-            {
-                var live = await GetPositionQuantityAsync(symbol, pos, ct);
-                if (live <= 0m)
-                {
-                    return new TradeFillResult
-                    {
-                        ExecutedQuantity = qty,
-                        AveragePrice = markPrice ?? 0m
-                    };
-                }
-            }
-
-            _lastExecutionError = $"Orden Futures {symbol} sin fill (qty=0).";
+            _lastExecutionError = string.IsNullOrWhiteSpace(_lastExecutionError)
+                ? $"Orden Futures {symbol} sin fill verificable (qty=0)."
+                : _lastExecutionError;
             return null;
         }
 
+        if (fill.AveragePrice <= 0m)
+        {
+            var px = markPrice is > 0m
+                ? markPrice.Value
+                : await GetMarkPriceAsync(settings, symbol, ct);
+            fill = new TradeFillResult
+            {
+                ExecutedQuantity = fill.ExecutedQuantity,
+                AveragePrice = px
+            };
+        }
+
         return fill;
+    }
+
+    /// <summary>
+    /// Garantiza fill con qty&gt;0: recovery de posicion, reintento de orden, o cierre flat verificado.
+    /// Nunca devuelve exito con qty=0.
+    /// </summary>
+    private async Task<TradeFillResult?> EnsureCompleteFillAsync(
+        BinanceConnectionSettings settings,
+        string symbol,
+        string positionSide,
+        bool open,
+        decimal requestedQty,
+        decimal posBefore,
+        decimal? markPrice,
+        TradeFillResult fill,
+        string side,
+        string positionSideParam,
+        CancellationToken ct)
+    {
+        if (fill.ExecutedQuantity > 0m)
+        {
+            return fill;
+        }
+
+        var recovered = await RecoverFillFromPositionAsync(
+            settings, symbol, positionSide, open, requestedQty, posBefore, markPrice, ct);
+        if (recovered is { ExecutedQuantity: > 0m })
+        {
+            return recovered;
+        }
+
+        // Segundo intento de mercado (Demo a veces traga el primero sin fill legible).
+        logger.LogWarning("Futures {Symbol} fill qty=0 tras 1er intento; reenviando orden.", symbol);
+        var posMid = await GetPositionQuantityAsync(symbol, positionSide, ct);
+        var retry = await SendOrderAsync(settings, symbol, side, positionSideParam, requestedQty, reduceOnly: !open, ct);
+        if (retry is { ExecutedQuantity: > 0m })
+        {
+            return retry;
+        }
+
+        recovered = await RecoverFillFromPositionAsync(
+            settings, symbol, positionSide, open, requestedQty, posMid, markPrice, ct);
+        if (recovered is { ExecutedQuantity: > 0m })
+        {
+            return recovered;
+        }
+
+        if (!open)
+        {
+            var live = await GetPositionQuantityAsync(symbol, positionSide, ct);
+            if (live <= 0m && posBefore > 0m)
+            {
+                var px = markPrice is > 0m
+                    ? markPrice.Value
+                    : await GetMarkPriceAsync(settings, symbol, ct);
+                return new TradeFillResult
+                {
+                    ExecutedQuantity = posBefore,
+                    AveragePrice = px > 0m ? px : 0m
+                };
+            }
+        }
+
+        _lastExecutionError = $"Orden Futures {symbol} sin fill verificable (qty=0 tras retry).";
+        return null;
     }
 
     private async Task<TradeFillResult?> RecoverFillFromPositionAsync(
@@ -354,36 +416,44 @@ public sealed class BinanceFuturesExecutionService(
         decimal? markPrice,
         CancellationToken ct)
     {
-        await Task.Delay(350, ct);
-        var live = await GetPositionQuantityAsync(symbol, positionSide, ct);
-        var px = markPrice is > 0m
-            ? markPrice.Value
-            : await GetMarkPriceAsync(settings, symbol, ct);
-
-        if (open)
+        // Varias lecturas: Demo tarda en reflejar positionRisk.
+        for (var attempt = 0; attempt < 4; attempt++)
         {
-            var delta = live - posBefore;
-            if (delta > 0m)
-            {
-                return new TradeFillResult { ExecutedQuantity = delta, AveragePrice = px };
-            }
+            await Task.Delay(300 + attempt * 200, ct);
+            var live = await GetPositionQuantityAsync(symbol, positionSide, ct);
+            var px = markPrice is > 0m
+                ? markPrice.Value
+                : await GetMarkPriceAsync(settings, symbol, ct);
 
-            if (live > 0m && posBefore <= 0m)
+            if (open)
             {
-                return new TradeFillResult { ExecutedQuantity = live, AveragePrice = px };
-            }
-        }
-        else
-        {
-            var closed = posBefore - live;
-            if (closed > 0m)
-            {
-                return new TradeFillResult { ExecutedQuantity = closed, AveragePrice = px };
-            }
+                var delta = live - posBefore;
+                if (delta > 0m)
+                {
+                    return new TradeFillResult { ExecutedQuantity = delta, AveragePrice = px };
+                }
 
-            if (live <= 0m && posBefore > 0m)
+                if (live > 0m && posBefore <= 0m)
+                {
+                    return new TradeFillResult
+                    {
+                        ExecutedQuantity = Math.Min(live, requestedQty > 0m ? requestedQty : live),
+                        AveragePrice = px
+                    };
+                }
+            }
+            else
             {
-                return new TradeFillResult { ExecutedQuantity = posBefore, AveragePrice = px };
+                var closed = posBefore - live;
+                if (closed > 0m)
+                {
+                    return new TradeFillResult { ExecutedQuantity = closed, AveragePrice = px };
+                }
+
+                if (live <= 0m && posBefore > 0m)
+                {
+                    return new TradeFillResult { ExecutedQuantity = posBefore, AveragePrice = px };
+                }
             }
         }
 
