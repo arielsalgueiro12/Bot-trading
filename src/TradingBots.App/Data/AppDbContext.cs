@@ -186,6 +186,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.Qty).HasColumnType("decimal(18,8)");
             entity.Property(x => x.Price).HasColumnType("decimal(18,8)");
             entity.Property(x => x.QuoteUsdt).HasColumnType("decimal(18,2)");
+            entity.Property(x => x.RealizedPnlUsdt).HasColumnType("decimal(18,8)");
+            entity.Property(x => x.FeesUsdt).HasColumnType("decimal(18,8)");
+            entity.Property(x => x.PnlResult).HasMaxLength(16);
             entity.HasIndex(x => x.Utc);
             entity.HasIndex(x => new { x.LeadPortfolioId, x.Utc });
         });

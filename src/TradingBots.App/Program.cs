@@ -625,6 +625,18 @@ using (var scope = app.Services.CreateScope())
             CREATE INDEX IF NOT EXISTS "IX_CopyMirrorEvents_Lead_Utc"
             ON "CopyMirrorEvents"("LeadPortfolioId", "Utc");
             """);
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "CopyMirrorEvents" ADD COLUMN IF NOT EXISTS "RealizedPnlUsdt" numeric(18,8) NULL;
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "CopyMirrorEvents" ADD COLUMN IF NOT EXISTS "FeesUsdt" numeric(18,8) NULL;
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "CopyMirrorEvents" ADD COLUMN IF NOT EXISTS "FeeIsEstimated" boolean NOT NULL DEFAULT false;
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "CopyMirrorEvents" ADD COLUMN IF NOT EXISTS "PnlResult" varchar(16) NULL;
+            """);
     }
 
     if (db.Database.IsSqlite())
@@ -677,12 +689,33 @@ using (var scope = app.Services.CreateScope())
                     QuoteUsdt REAL NULL,
                     LeadOrderTimeMs INTEGER NULL,
                     DetectDelayMs INTEGER NULL,
-                    ExecDelayMs INTEGER NULL
+                    ExecDelayMs INTEGER NULL,
+                    RealizedPnlUsdt REAL NULL,
+                    FeesUsdt REAL NULL,
+                    FeeIsEstimated INTEGER NOT NULL DEFAULT 0,
+                    PnlResult TEXT NULL
                 );
                 """);
         }
         catch (SqliteException)
         {
+        }
+
+        foreach (var sql in new[]
+                 {
+                     """ALTER TABLE CopyMirrorEvents ADD COLUMN RealizedPnlUsdt REAL NULL;""",
+                     """ALTER TABLE CopyMirrorEvents ADD COLUMN FeesUsdt REAL NULL;""",
+                     """ALTER TABLE CopyMirrorEvents ADD COLUMN FeeIsEstimated INTEGER NOT NULL DEFAULT 0;""",
+                     """ALTER TABLE CopyMirrorEvents ADD COLUMN PnlResult TEXT NULL;"""
+                 })
+        {
+            try
+            {
+                await db.Database.ExecuteSqlRawAsync(sql);
+            }
+            catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase))
+            {
+            }
         }
     }
 

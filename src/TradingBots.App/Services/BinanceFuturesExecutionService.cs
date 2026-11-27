@@ -331,14 +331,116 @@ public sealed class BinanceFuturesExecutionService(
             var px = markPrice is > 0m
                 ? markPrice.Value
                 : await GetMarkPriceAsync(settings, symbol, ct);
-            fill = new TradeFillResult
-            {
-                ExecutedQuantity = fill.ExecutedQuantity,
-                AveragePrice = px
-            };
+            fill = CloneFill(fill, averagePrice: px);
+        }
+
+        fill = await EnrichFillFromUserTradesAsync(settings, symbol, fill, ct);
+        if (fill.CommissionUsdt <= 0m && fill.ExecutedQuantity > 0m && fill.AveragePrice > 0m)
+        {
+            fill = CloneFill(
+                fill,
+                commissionUsdt: EstimateFuturesFeeUsdt(fill.ExecutedQuantity, fill.AveragePrice),
+                feeIsEstimated: true);
         }
 
         return fill;
+    }
+
+    private static TradeFillResult CloneFill(
+        TradeFillResult fill,
+        decimal? executedQuantity = null,
+        decimal? averagePrice = null,
+        decimal? commissionUsdt = null,
+        decimal? realizedPnlUsdt = null,
+        bool? feeIsEstimated = null,
+        long? orderId = null) =>
+        new()
+        {
+            ExecutedQuantity = executedQuantity ?? fill.ExecutedQuantity,
+            AveragePrice = averagePrice ?? fill.AveragePrice,
+            CommissionUsdt = commissionUsdt ?? fill.CommissionUsdt,
+            RealizedPnlUsdt = realizedPnlUsdt ?? fill.RealizedPnlUsdt,
+            FeeIsEstimated = feeIsEstimated ?? fill.FeeIsEstimated,
+            OrderId = orderId ?? fill.OrderId
+        };
+
+    private static decimal EstimateFuturesFeeUsdt(decimal qty, decimal price) =>
+        qty > 0m && price > 0m
+            ? decimal.Round(qty * price * 0.0004m, 8, MidpointRounding.AwayFromZero) // ~4 bps taker VIP0
+            : 0m;
+
+    private async Task<TradeFillResult> EnrichFillFromUserTradesAsync(
+        BinanceConnectionSettings settings,
+        string symbol,
+        TradeFillResult fill,
+        CancellationToken ct)
+    {
+        if (fill.OrderId <= 0)
+        {
+            return fill;
+        }
+
+        try
+        {
+            var baseUrl = settingsService.ResolveFuturesBaseUrl(settings);
+            await SyncServerTimeOffsetAsync(baseUrl, ct);
+            var query =
+                $"symbol={symbol}&orderId={fill.OrderId}&recvWindow={DefaultRecvWindow}&timestamp={NowMsWithOffset()}";
+            var signature = Sign(query, settings.FuturesApiSecret);
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get,
+                $"{baseUrl}/fapi/v1/userTrades?{query}&signature={signature}");
+            request.Headers.TryAddWithoutValidation("X-MBX-APIKEY", settings.FuturesApiKey);
+            var response = await httpClient.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                return fill;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(ct);
+            var trades = JsonSerializer.Deserialize<List<FuturesUserTrade>>(body, JsonOpts());
+            if (trades is null || trades.Count == 0)
+            {
+                return fill;
+            }
+
+            decimal commission = 0m;
+            decimal realized = 0m;
+            var estimated = false;
+            foreach (var t in trades)
+            {
+                var c = Parse(t.Commission);
+                var asset = (t.CommissionAsset ?? string.Empty).Trim().ToUpperInvariant();
+                if (asset is "USDT" or "USDC" or "FDUSD" or "BUSD")
+                {
+                    commission += c;
+                }
+                else if (c > 0m)
+                {
+                    // BNB u otro: aproximar 4 bps del notional del trade.
+                    var q = Parse(t.Qty);
+                    var p = Parse(t.Price);
+                    if (q > 0m && p > 0m)
+                    {
+                        commission += q * p * 0.0004m;
+                        estimated = true;
+                    }
+                }
+
+                realized += Parse(t.RealizedPnl);
+            }
+
+            return CloneFill(
+                fill,
+                commissionUsdt: decimal.Round(commission, 8, MidpointRounding.AwayFromZero),
+                realizedPnlUsdt: decimal.Round(realized, 8, MidpointRounding.AwayFromZero),
+                feeIsEstimated: estimated);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Futures userTrades enrich failed {Symbol} order={OrderId}", symbol, fill.OrderId);
+            return fill;
+        }
     }
 
     /// <summary>
@@ -397,7 +499,8 @@ public sealed class BinanceFuturesExecutionService(
                 return new TradeFillResult
                 {
                     ExecutedQuantity = posBefore,
-                    AveragePrice = px > 0m ? px : 0m
+                    AveragePrice = px > 0m ? px : 0m,
+                    OrderId = fill.OrderId
                 };
             }
         }
@@ -607,7 +710,8 @@ public sealed class BinanceFuturesExecutionService(
         return new TradeFillResult
         {
             ExecutedQuantity = qty,
-            AveragePrice = avg
+            AveragePrice = avg,
+            OrderId = order.OrderId
         };
     }
 
@@ -876,6 +980,15 @@ public sealed class BinanceFuturesExecutionService(
         public string ExecutedQty { get; set; } = "0";
         public string AvgPrice { get; set; } = "0";
         public string CumQuote { get; set; } = "0";
+    }
+
+    private sealed class FuturesUserTrade
+    {
+        public string Qty { get; set; } = "0";
+        public string Price { get; set; } = "0";
+        public string Commission { get; set; } = "0";
+        public string CommissionAsset { get; set; } = string.Empty;
+        public string RealizedPnl { get; set; } = "0";
     }
 
     private sealed class FuturesExchangeInfo

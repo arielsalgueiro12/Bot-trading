@@ -112,6 +112,14 @@ public sealed class CopyMirrorEvent
     public long? LeadOrderTimeMs { get; init; }
     public int? DetectDelayMs { get; init; }
     public int? ExecDelayMs { get; init; }
+    /// <summary>PnL neto USDT (tras fees). Solo en cierres cuando se pudo calcular.</summary>
+    public decimal? RealizedPnlUsdt { get; init; }
+    /// <summary>Fees totales USDT del round-trip (open+close) o fee de la pata abierta.</summary>
+    public decimal? FeesUsdt { get; init; }
+    /// <summary>true si algún fee se estimó (no vino exacto de Binance).</summary>
+    public bool FeeIsEstimated { get; init; }
+    /// <summary>profit / loss / breakeven</summary>
+    public string? PnlResult { get; init; }
 
     public bool IsMovement =>
         Kind is "dryrun" or "executed" or "detected" or "skipped" or "error";

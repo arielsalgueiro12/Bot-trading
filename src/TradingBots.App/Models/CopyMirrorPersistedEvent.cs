@@ -18,4 +18,8 @@ public sealed class CopyMirrorPersistedEvent
     public long? LeadOrderTimeMs { get; set; }
     public int? DetectDelayMs { get; set; }
     public int? ExecDelayMs { get; set; }
+    public decimal? RealizedPnlUsdt { get; set; }
+    public decimal? FeesUsdt { get; set; }
+    public bool FeeIsEstimated { get; set; }
+    public string? PnlResult { get; set; }
 }

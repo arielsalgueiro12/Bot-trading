@@ -26,6 +26,12 @@ public sealed class TradeFillResult
 {
     public decimal ExecutedQuantity { get; init; }
     public decimal AveragePrice { get; init; }
+    /// <summary>Comision estimada/convertida a USDT (si se pudo). 0 = desconocida.</summary>
+    public decimal CommissionUsdt { get; init; }
+    /// <summary>PnL realizado reportado por exchange (Futures userTrades). null = no disponible.</summary>
+    public decimal? RealizedPnlUsdt { get; init; }
+    public long OrderId { get; init; }
+    public bool FeeIsEstimated { get; init; }
 }
 
 public sealed class BinanceTradeExecutionService(
@@ -96,7 +102,7 @@ public sealed class BinanceTradeExecutionService(
             return null;
         }
         var clientOrderId = BuildClientOrderId("BUY", symbol, botId);
-        var query = $"symbol={symbol}&side=BUY&type=MARKET&quoteOrderQty={Fmt(quote)}&newClientOrderId={clientOrderId}&recvWindow={DefaultRecvWindow}&timestamp={NowMsWithOffset()}";
+        var query = $"symbol={symbol}&side=BUY&type=MARKET&quoteOrderQty={Fmt(quote)}&newOrderRespType=FULL&newClientOrderId={clientOrderId}&recvWindow={DefaultRecvWindow}&timestamp={NowMsWithOffset()}";
         return await SendOrderAsync(baseUrl, settings, query, botId, symbol, "BUY", quote, 0m, ct);
     }
 
@@ -311,7 +317,7 @@ public sealed class BinanceTradeExecutionService(
         }
 
         var clientOrderId = BuildClientOrderId("SELL", symbol, botId);
-        var query = $"symbol={symbol}&side=SELL&type=MARKET&quantity={Fmt(normalized)}&newClientOrderId={clientOrderId}&recvWindow={DefaultRecvWindow}&timestamp={NowMsWithOffset()}";
+        var query = $"symbol={symbol}&side=SELL&type=MARKET&quantity={Fmt(normalized)}&newOrderRespType=FULL&newClientOrderId={clientOrderId}&recvWindow={DefaultRecvWindow}&timestamp={NowMsWithOffset()}";
         return await SendOrderAsync(baseUrl, settings, query, botId, symbol, "SELL", 0m, normalized, ct);
     }
 
@@ -347,16 +353,10 @@ public sealed class BinanceTradeExecutionService(
                 return null;
             }
 
-            var qty = Parse(order.ExecutedQty);
-            var cummQuote = Parse(order.CummulativeQuoteQty);
-            var price = qty > 0 ? cummQuote / qty : 0m;
+            var fill = ToFillResult(order, symbol);
             var latencyMs = (int)Math.Max(0, (DateTime.UtcNow - startedAt).TotalMilliseconds);
-            await WriteAuditAsync(botId, symbol, side, "execution", "success", "Orden ejecutada.", requestedQuote, requestedBase, qty, price, latencyMs, true);
-            return new TradeFillResult
-            {
-                ExecutedQuantity = qty,
-                AveragePrice = price
-            };
+            await WriteAuditAsync(botId, symbol, side, "execution", "success", "Orden ejecutada.", requestedQuote, requestedBase, fill.ExecutedQuantity, fill.AveragePrice, latencyMs, true);
+            return fill;
         }
         catch (Exception ex)
         {
@@ -527,10 +527,115 @@ public sealed class BinanceTradeExecutionService(
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
+    private static TradeFillResult ToFillResult(OrderResponse order, string symbol)
+    {
+        var qty = Parse(order.ExecutedQty);
+        var cummQuote = Parse(order.CummulativeQuoteQty);
+        var price = qty > 0 ? cummQuote / qty : 0m;
+        var (feeUsdt, estimated) = SumSpotCommissionUsdt(order.Fills, symbol, price);
+        if (feeUsdt <= 0m && qty > 0m && price > 0m)
+        {
+            feeUsdt = EstimateSpotFeeUsdt(qty, price);
+            estimated = true;
+        }
+
+        return new TradeFillResult
+        {
+            ExecutedQuantity = qty,
+            AveragePrice = price,
+            CommissionUsdt = feeUsdt,
+            FeeIsEstimated = estimated,
+            OrderId = order.OrderId
+        };
+    }
+
+    private static (decimal feeUsdt, bool estimated) SumSpotCommissionUsdt(
+        List<OrderFillResponse>? fills,
+        string symbol,
+        decimal avgPrice)
+    {
+        if (fills is null || fills.Count == 0)
+        {
+            return (0m, true);
+        }
+
+        var quote = GuessQuoteAsset(symbol);
+        var baseAsset = string.IsNullOrWhiteSpace(quote) || !symbol.EndsWith(quote, StringComparison.OrdinalIgnoreCase)
+            ? symbol
+            : symbol[..^quote.Length];
+        decimal total = 0m;
+        var estimated = false;
+        foreach (var f in fills)
+        {
+            var commission = Parse(f.Commission);
+            if (commission <= 0m)
+            {
+                continue;
+            }
+
+            var asset = (f.CommissionAsset ?? string.Empty).Trim().ToUpperInvariant();
+            if (asset is "USDT" or "USDC" or "FDUSD" or "BUSD" or "TUSD")
+            {
+                total += commission;
+            }
+            else if (!string.IsNullOrWhiteSpace(quote) &&
+                     asset.Equals(quote, StringComparison.OrdinalIgnoreCase))
+            {
+                total += commission;
+            }
+            else if (asset.Equals(baseAsset, StringComparison.OrdinalIgnoreCase) && avgPrice > 0m)
+            {
+                total += commission * avgPrice;
+            }
+            else
+            {
+                // BNB u otro asset: aproximar 10 bps del notional del fill.
+                var fillQty = Parse(f.Qty);
+                var fillPx = Parse(f.Price);
+                if (fillQty > 0m && fillPx > 0m)
+                {
+                    total += fillQty * fillPx * 0.001m;
+                    estimated = true;
+                }
+            }
+        }
+
+        return (decimal.Round(total, 8, MidpointRounding.AwayFromZero), estimated);
+    }
+
+    private static string GuessQuoteAsset(string symbol)
+    {
+        var s = (symbol ?? string.Empty).Trim().ToUpperInvariant();
+        foreach (var q in new[] { "USDT", "USDC", "FDUSD", "BUSD", "BTC", "ETH", "BNB" })
+        {
+            if (s.EndsWith(q, StringComparison.Ordinal))
+            {
+                return q;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static decimal EstimateSpotFeeUsdt(decimal qty, decimal price) =>
+        qty > 0m && price > 0m
+            ? decimal.Round(qty * price * 0.001m, 8, MidpointRounding.AwayFromZero)
+            : 0m;
+
     private sealed class OrderResponse
     {
+        public long OrderId { get; set; }
         public string ExecutedQty { get; set; } = "0";
         public string CummulativeQuoteQty { get; set; } = "0";
+        public List<OrderFillResponse>? Fills { get; set; }
+    }
+
+    private sealed class OrderFillResponse
+    {
+        public string Price { get; set; } = "0";
+        public string Qty { get; set; } = "0";
+        public string Commission { get; set; } = "0";
+        public string CommissionAsset { get; set; } = string.Empty;
     }
 
     private sealed class ExchangeInfoResponse
@@ -753,10 +858,14 @@ public sealed class BinanceTradeExecutionService(
             {
                 _reconcileRecovered++;
                 await WriteAuditAsync(botId, symbol, side, "reconcile", "success", $"Orden recuperada por clientOrderId={clientOrderId}, status={order.Status}.", requestedQuote, requestedBase, qty, price, latencyMs, true);
+                var fee = EstimateSpotFeeUsdt(qty, price);
                 return new TradeFillResult
                 {
                     ExecutedQuantity = qty,
-                    AveragePrice = price
+                    AveragePrice = price,
+                    CommissionUsdt = fee,
+                    FeeIsEstimated = true,
+                    OrderId = order.OrderId
                 };
             }
 
@@ -771,6 +880,7 @@ public sealed class BinanceTradeExecutionService(
 
     private sealed class OrderStatusResponse
     {
+        public long OrderId { get; set; }
         public string Status { get; set; } = string.Empty;
         public string ExecutedQty { get; set; } = "0";
         public string CummulativeQuoteQty { get; set; } = "0";

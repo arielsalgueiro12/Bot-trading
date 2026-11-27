@@ -48,6 +48,9 @@ public sealed class CopyMirrorService(
         public ConcurrentDictionary<string, decimal> OpenQty { get; } = new(StringComparer.OrdinalIgnoreCase);
         public ConcurrentDictionary<string, decimal> OpenFutLong { get; } = new(StringComparer.OrdinalIgnoreCase);
         public ConcurrentDictionary<string, decimal> OpenFutShort { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public ConcurrentDictionary<string, LotBasis> SpotBasis { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public ConcurrentDictionary<string, LotBasis> FutLongBasis { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public ConcurrentDictionary<string, LotBasis> FutShortBasis { get; } = new(StringComparer.OrdinalIgnoreCase);
         /// <summary>Simbolos Futures bloqueados (p.ej. TradFi sin acuerdo) — no reintentar OPEN ni contar SKIP de cierre.</summary>
         public ConcurrentDictionary<string, string> BlockedFuturesSymbols { get; } = new(StringComparer.OrdinalIgnoreCase);
         public bool WarmingUp { get; set; }
@@ -362,11 +365,35 @@ public sealed class CopyMirrorService(
     {
         var dto = new OpenPositionsDto
         {
-            Spot = new Dictionary<string, decimal>(session.OpenQty, StringComparer.OrdinalIgnoreCase),
-            FutL = new Dictionary<string, decimal>(session.OpenFutLong, StringComparer.OrdinalIgnoreCase),
-            FutS = new Dictionary<string, decimal>(session.OpenFutShort, StringComparer.OrdinalIgnoreCase)
+            Spot = ToLotMap(session.OpenQty, session.SpotBasis),
+            FutL = ToLotMap(session.OpenFutLong, session.FutLongBasis),
+            FutS = ToLotMap(session.OpenFutShort, session.FutShortBasis)
         };
         return JsonSerializer.Serialize(dto);
+    }
+
+    private static Dictionary<string, OpenLotDto> ToLotMap(
+        ConcurrentDictionary<string, decimal> qty,
+        ConcurrentDictionary<string, LotBasis> basis)
+    {
+        var map = new Dictionary<string, OpenLotDto>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in qty)
+        {
+            if (kv.Value <= 0m)
+            {
+                continue;
+            }
+
+            basis.TryGetValue(kv.Key, out var b);
+            map[kv.Key] = new OpenLotDto
+            {
+                Q = kv.Value,
+                E = b?.AvgEntry ?? 0m,
+                F = b?.OpenFeesUsdt ?? 0m
+            };
+        }
+
+        return map;
     }
 
     private static void ApplyOpenPositionsJson(MirrorSession session, string? json)
@@ -374,6 +401,9 @@ public sealed class CopyMirrorService(
         session.OpenQty.Clear();
         session.OpenFutLong.Clear();
         session.OpenFutShort.Clear();
+        session.SpotBasis.Clear();
+        session.FutLongBasis.Clear();
+        session.FutShortBasis.Clear();
         if (string.IsNullOrWhiteSpace(json))
         {
             return;
@@ -381,35 +411,13 @@ public sealed class CopyMirrorService(
 
         try
         {
-            var dto = JsonSerializer.Deserialize<OpenPositionsDto>(json);
-            if (dto is null)
-            {
-                return;
-            }
-
-            foreach (var kv in dto.Spot ?? [])
-            {
-                if (kv.Value > 0m)
-                {
-                    session.OpenQty[kv.Key] = kv.Value;
-                }
-            }
-
-            foreach (var kv in dto.FutL ?? [])
-            {
-                if (kv.Value > 0m)
-                {
-                    session.OpenFutLong[kv.Key] = kv.Value;
-                }
-            }
-
-            foreach (var kv in dto.FutS ?? [])
-            {
-                if (kv.Value > 0m)
-                {
-                    session.OpenFutShort[kv.Key] = kv.Value;
-                }
-            }
+            using var doc = JsonDocument.Parse(json);
+            ApplyLotBook(doc.RootElement, "Spot", session.OpenQty, session.SpotBasis);
+            ApplyLotBook(doc.RootElement, "spot", session.OpenQty, session.SpotBasis);
+            ApplyLotBook(doc.RootElement, "FutL", session.OpenFutLong, session.FutLongBasis);
+            ApplyLotBook(doc.RootElement, "futL", session.OpenFutLong, session.FutLongBasis);
+            ApplyLotBook(doc.RootElement, "FutS", session.OpenFutShort, session.FutShortBasis);
+            ApplyLotBook(doc.RootElement, "futS", session.OpenFutShort, session.FutShortBasis);
         }
         catch
         {
@@ -417,11 +425,156 @@ public sealed class CopyMirrorService(
         }
     }
 
+    private static void ApplyLotBook(
+        JsonElement root,
+        string prop,
+        ConcurrentDictionary<string, decimal> qty,
+        ConcurrentDictionary<string, LotBasis> basis)
+    {
+        if (!root.TryGetProperty(prop, out var node) || node.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+
+        foreach (var item in node.EnumerateObject())
+        {
+            if (item.Value.ValueKind == JsonValueKind.Number &&
+                item.Value.TryGetDecimal(out var plainQty) &&
+                plainQty > 0m)
+            {
+                qty[item.Name] = plainQty;
+                continue;
+            }
+
+            if (item.Value.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var q = ReadLotDecimal(item.Value, "Q", "q");
+            if (q <= 0m)
+            {
+                continue;
+            }
+
+            qty[item.Name] = q;
+            var e = ReadLotDecimal(item.Value, "E", "e");
+            var f = ReadLotDecimal(item.Value, "F", "f");
+            if (e > 0m || f > 0m)
+            {
+                basis[item.Name] = new LotBasis { AvgEntry = e, OpenFeesUsdt = f };
+            }
+        }
+    }
+
+    private static decimal ReadLotDecimal(JsonElement obj, string a, string b)
+    {
+        if (obj.TryGetProperty(a, out var va) && va.ValueKind == JsonValueKind.Number && va.TryGetDecimal(out var da))
+        {
+            return da;
+        }
+
+        if (obj.TryGetProperty(b, out var vb) && vb.ValueKind == JsonValueKind.Number && vb.TryGetDecimal(out var db))
+        {
+            return db;
+        }
+
+        return 0m;
+    }
+
+    private static void BookOpen(
+        ConcurrentDictionary<string, decimal> book,
+        ConcurrentDictionary<string, LotBasis> basis,
+        string symbol,
+        decimal fillQty,
+        decimal fillPrice,
+        decimal openFeeUsdt)
+    {
+        if (fillQty <= 0m)
+        {
+            return;
+        }
+
+        book.AddOrUpdate(symbol, fillQty, (_, cur) => cur + fillQty);
+        basis.AddOrUpdate(
+            symbol,
+            _ => new LotBasis { AvgEntry = fillPrice, OpenFeesUsdt = Math.Max(0m, openFeeUsdt) },
+            (_, cur) =>
+            {
+                var total = book.TryGetValue(symbol, out var q) ? q : fillQty;
+                var prev = Math.Max(0m, total - fillQty);
+                var avg = prev > 0m && fillPrice > 0m && cur.AvgEntry > 0m
+                    ? ((cur.AvgEntry * prev) + (fillPrice * fillQty)) / total
+                    : (fillPrice > 0m ? fillPrice : cur.AvgEntry);
+                return new LotBasis
+                {
+                    AvgEntry = avg,
+                    OpenFeesUsdt = cur.OpenFeesUsdt + Math.Max(0m, openFeeUsdt)
+                };
+            });
+    }
+
+    private static void BookClear(
+        ConcurrentDictionary<string, decimal> book,
+        ConcurrentDictionary<string, LotBasis> basis,
+        string symbol)
+    {
+        book.TryRemove(symbol, out _);
+        basis.TryRemove(symbol, out _);
+    }
+
+    private static (decimal? pnl, decimal fees, string? result, bool feeEstimated) ResolveClosePnl(
+        bool isShort,
+        decimal qty,
+        decimal exitPrice,
+        LotBasis? basis,
+        TradeFillResult fill)
+    {
+        var openFees = basis?.OpenFeesUsdt ?? 0m;
+        var closeFees = Math.Max(0m, fill.CommissionUsdt);
+        var fees = decimal.Round(openFees + closeFees, 8, MidpointRounding.AwayFromZero);
+        var feeEstimated = fill.FeeIsEstimated || (basis is null && openFees <= 0m);
+
+        decimal? pnl;
+        if (fill.RealizedPnlUsdt is not null)
+        {
+            // realizedPnl de Binance Futures no incluye comisión; restamos open+close fees.
+            pnl = decimal.Round(fill.RealizedPnlUsdt.Value - fees, 4, MidpointRounding.AwayFromZero);
+        }
+        else if (basis is { AvgEntry: > 0m } && exitPrice > 0m && qty > 0m)
+        {
+            var gross = isShort
+                ? (basis.AvgEntry - exitPrice) * qty
+                : (exitPrice - basis.AvgEntry) * qty;
+            pnl = decimal.Round(gross - fees, 4, MidpointRounding.AwayFromZero);
+        }
+        else
+        {
+            return (null, fees > 0m ? fees : closeFees, null, feeEstimated);
+        }
+
+        var result = pnl > 0.005m ? "profit" : pnl < -0.005m ? "loss" : "breakeven";
+        return (pnl, fees, result, feeEstimated);
+    }
+
+    private sealed class LotBasis
+    {
+        public decimal AvgEntry { get; init; }
+        public decimal OpenFeesUsdt { get; init; }
+    }
+
+    private sealed class OpenLotDto
+    {
+        public decimal Q { get; set; }
+        public decimal E { get; set; }
+        public decimal F { get; set; }
+    }
+
     private sealed class OpenPositionsDto
     {
-        public Dictionary<string, decimal>? Spot { get; set; }
-        public Dictionary<string, decimal>? FutL { get; set; }
-        public Dictionary<string, decimal>? FutS { get; set; }
+        public Dictionary<string, OpenLotDto>? Spot { get; set; }
+        public Dictionary<string, OpenLotDto>? FutL { get; set; }
+        public Dictionary<string, OpenLotDto>? FutS { get; set; }
     }
 
     public Task<IReadOnlyList<CopyLeadSummary>> GetLeaderboardAsync(
@@ -955,13 +1108,18 @@ public sealed class CopyMirrorService(
                 return;
             }
 
-            session.OpenQty.AddOrUpdate(order.Symbol, fill.ExecutedQuantity, (_, cur) => cur + fill.ExecutedQuantity);
+            BookOpen(session.OpenQty, session.SpotBasis, order.Symbol, fill.ExecutedQuantity, fill.AveragePrice, fill.CommissionUsdt);
             PersistOpenPositions(session);
             Interlocked.Increment(ref session.MirroredBuys);
+            var openFeeNote = fill.CommissionUsdt > 0m
+                ? $" fee={Fmt(fill.CommissionUsdt)}{(fill.FeeIsEstimated ? "~" : "")}"
+                : string.Empty;
             PushHubEvent(session, "executed",
-                $"[{DisplayName(session)}] COMPRA Spot {order.Symbol} qty={Fmt(fill.ExecutedQuantity)} @ {Fmt(fill.AveragePrice)}",
+                $"[{DisplayName(session)}] COMPRA Spot {order.Symbol} qty={Fmt(fill.ExecutedQuantity)} @ {Fmt(fill.AveragePrice)}{openFeeNote}",
                 order.Symbol, "BUY", "live", fill.ExecutedQuantity, fill.AveragePrice, settings.QuotePerTradeUsdt,
-                order.OrderTimeMs, detectDelayMs, execDelay);
+                order.OrderTimeMs, detectDelayMs, execDelay,
+                realizedPnlUsdt: null, feesUsdt: fill.CommissionUsdt > 0m ? fill.CommissionUsdt : null,
+                feeIsEstimated: fill.FeeIsEstimated);
             return;
         }
 
@@ -973,6 +1131,7 @@ public sealed class CopyMirrorService(
             return;
         }
 
+        session.SpotBasis.TryGetValue(order.Symbol, out var spotBasis);
         var sellFill = await execution.MarketSellAsync(order.Symbol, qty, botId: null, ct);
         var sellExecDelay = (int)(DateTime.UtcNow - execStart).TotalMilliseconds;
         if (sellFill is null)
@@ -983,13 +1142,17 @@ public sealed class CopyMirrorService(
             return;
         }
 
-        session.OpenQty.TryRemove(order.Symbol, out _);
+        var (spotPnl, spotFees, spotResult, spotFeeEst) =
+            ResolveClosePnl(isShort: false, sellFill.ExecutedQuantity, sellFill.AveragePrice, spotBasis, sellFill);
+        BookClear(session.OpenQty, session.SpotBasis, order.Symbol);
         PersistOpenPositions(session);
         Interlocked.Increment(ref session.MirroredSells);
         PushHubEvent(session, "executed",
-            $"[{DisplayName(session)}] VENTA Spot {order.Symbol} qty={Fmt(sellFill.ExecutedQuantity)} @ {Fmt(sellFill.AveragePrice)}",
+            FormatCloseMessage(session, "VENTA Spot", order.Symbol, sellFill, spotPnl, spotFees, spotResult, spotFeeEst),
             order.Symbol, "SELL", "live", sellFill.ExecutedQuantity, sellFill.AveragePrice, null,
-            order.OrderTimeMs, detectDelayMs, sellExecDelay);
+            order.OrderTimeMs, detectDelayMs, sellExecDelay,
+            realizedPnlUsdt: spotPnl, feesUsdt: spotFees > 0m ? spotFees : null,
+            feeIsEstimated: spotFeeEst, pnlResult: spotResult);
     }
 
     private async Task ExecuteFuturesAsync(
@@ -1003,11 +1166,14 @@ public sealed class CopyMirrorService(
         CancellationToken ct)
     {
         var book = intent.PositionSide == "SHORT" ? session.OpenFutShort : session.OpenFutLong;
+        var basisBook = intent.PositionSide == "SHORT" ? session.FutShortBasis : session.FutLongBasis;
         decimal closeQty = 0m;
+        LotBasis? closeBasis = null;
         if (!intent.IsOpen)
         {
             // Solo cierra lo que ESTE mirror abrio (no robar posiciones de otros mirrors).
             book.TryGetValue(order.Symbol, out closeQty);
+            basisBook.TryGetValue(order.Symbol, out closeBasis);
             if (closeQty <= 0m)
             {
                 var blocked = session.BlockedFuturesSymbols.TryGetValue(order.Symbol, out var why);
@@ -1024,7 +1190,7 @@ public sealed class CopyMirrorService(
             var live = await execution.GetPositionQuantityAsync(order.Symbol, intent.PositionSide, ct);
             if (live <= 0m)
             {
-                book.TryRemove(order.Symbol, out _);
+                BookClear(book, basisBook, order.Symbol);
                 PersistOpenPositions(session);
                 Interlocked.Increment(ref session.MirroredSells);
                 PushHubEvent(session, "executed",
@@ -1075,7 +1241,7 @@ public sealed class CopyMirrorService(
                 var liveAfter = await execution.GetPositionQuantityAsync(order.Symbol, intent.PositionSide, ct);
                 if (liveAfter <= 0m)
                 {
-                    book.TryRemove(order.Symbol, out _);
+                    BookClear(book, basisBook, order.Symbol);
                     PersistOpenPositions(session);
                     Interlocked.Increment(ref session.MirroredSells);
                     PushHubEvent(session, "executed",
@@ -1112,25 +1278,64 @@ public sealed class CopyMirrorService(
 
         if (intent.IsOpen)
         {
-            book.AddOrUpdate(order.Symbol, fill.ExecutedQuantity, (_, cur) => cur + fill.ExecutedQuantity);
+            BookOpen(book, basisBook, order.Symbol, fill.ExecutedQuantity, fill.AveragePrice, fill.CommissionUsdt);
             PersistOpenPositions(session);
             Interlocked.Increment(ref session.MirroredBuys);
+            var openFeeNote = fill.CommissionUsdt > 0m
+                ? $" fee={Fmt(fill.CommissionUsdt)}{(fill.FeeIsEstimated ? "~" : "")}"
+                : string.Empty;
             PushHubEvent(session, "executed",
                 $"[{DisplayName(session)}] OPEN Futures {intent.PositionSide} {order.Symbol} " +
-                $"qty={Fmt(fill.ExecutedQuantity)} @ {Fmt(fill.AveragePrice)} x{settings.FuturesLeverage}",
+                $"qty={Fmt(fill.ExecutedQuantity)} @ {Fmt(fill.AveragePrice)} x{settings.FuturesLeverage}{openFeeNote}",
                 order.Symbol, "BUY", "live", fill.ExecutedQuantity, fill.AveragePrice, settings.QuotePerTradeUsdt,
-                order.OrderTimeMs, detectDelayMs, execDelay);
+                order.OrderTimeMs, detectDelayMs, execDelay,
+                realizedPnlUsdt: null, feesUsdt: fill.CommissionUsdt > 0m ? fill.CommissionUsdt : null,
+                feeIsEstimated: fill.FeeIsEstimated);
             return;
         }
 
-        book.TryRemove(order.Symbol, out _);
+        var (futPnl, futFees, futResult, futFeeEst) =
+            ResolveClosePnl(
+                isShort: intent.PositionSide == "SHORT",
+                fill.ExecutedQuantity,
+                fill.AveragePrice,
+                closeBasis,
+                fill);
+        BookClear(book, basisBook, order.Symbol);
         PersistOpenPositions(session);
         Interlocked.Increment(ref session.MirroredSells);
         PushHubEvent(session, "executed",
-            $"[{DisplayName(session)}] CLOSE Futures {intent.PositionSide} {order.Symbol} " +
-            $"qty={Fmt(fill.ExecutedQuantity)} @ {Fmt(fill.AveragePrice)}",
+            FormatCloseMessage(session, $"CLOSE Futures {intent.PositionSide}", order.Symbol, fill, futPnl, futFees, futResult, futFeeEst),
             order.Symbol, "SELL", "live", fill.ExecutedQuantity, fill.AveragePrice, null,
-            order.OrderTimeMs, detectDelayMs, execDelay);
+            order.OrderTimeMs, detectDelayMs, execDelay,
+            realizedPnlUsdt: futPnl, feesUsdt: futFees > 0m ? futFees : null,
+            feeIsEstimated: futFeeEst, pnlResult: futResult);
+    }
+
+    private static string FormatCloseMessage(
+        MirrorSession session,
+        string label,
+        string symbol,
+        TradeFillResult fill,
+        decimal? pnl,
+        decimal fees,
+        string? result,
+        bool feeEstimated)
+    {
+        var msg =
+            $"[{DisplayName(session)}] {label} {symbol} qty={Fmt(fill.ExecutedQuantity)} @ {Fmt(fill.AveragePrice)}";
+        if (pnl is not null && result is not null)
+        {
+            var sign = pnl.Value >= 0m ? "+" : string.Empty;
+            msg += $" → {result.ToUpperInvariant()} {sign}{Fmt(pnl.Value)} USDT";
+        }
+
+        if (fees > 0m)
+        {
+            msg += $" (fees={Fmt(fees)}{(feeEstimated ? "~" : "")})";
+        }
+
+        return msg;
     }
 
     private static bool IsTradFiAgreementError(string? err) =>
@@ -1165,9 +1370,10 @@ public sealed class CopyMirrorService(
                     continue;
                 }
 
+                var basis = p.PositionSide == "SHORT" ? session.FutShortBasis : session.FutLongBasis;
                 if (p.Quantity <= 0m)
                 {
-                    book.TryRemove(p.Symbol, out _);
+                    BookClear(book, basis, p.Symbol);
                 }
                 else
                 {
@@ -1180,6 +1386,7 @@ public sealed class CopyMirrorService(
             // Simbolos en libro que ya no estan en exchange → limpiar.
             foreach (var book in new[] { session.OpenFutLong, session.OpenFutShort })
             {
+                var basis = ReferenceEquals(book, session.OpenFutShort) ? session.FutShortBasis : session.FutLongBasis;
                 foreach (var sym in book.Keys.ToList())
                 {
                     var side = ReferenceEquals(book, session.OpenFutShort) ? "SHORT" : "LONG";
@@ -1188,7 +1395,7 @@ public sealed class CopyMirrorService(
                             string.Equals(p.PositionSide, side, StringComparison.OrdinalIgnoreCase) &&
                             p.Quantity > 0m))
                     {
-                        book.TryRemove(sym, out _);
+                        BookClear(book, basis, sym);
                         refreshed++;
                     }
                 }
@@ -1284,7 +1491,11 @@ public sealed class CopyMirrorService(
         decimal? quoteUsdt = null,
         long? leadOrderTimeMs = null,
         int? detectDelayMs = null,
-        int? execDelayMs = null)
+        int? execDelayMs = null,
+        decimal? realizedPnlUsdt = null,
+        decimal? feesUsdt = null,
+        bool feeIsEstimated = false,
+        string? pnlResult = null)
     {
         var ev = new CopyMirrorEvent
         {
@@ -1301,7 +1512,11 @@ public sealed class CopyMirrorService(
             QuoteUsdt = quoteUsdt,
             LeadOrderTimeMs = leadOrderTimeMs,
             DetectDelayMs = detectDelayMs,
-            ExecDelayMs = execDelayMs
+            ExecDelayMs = execDelayMs,
+            RealizedPnlUsdt = realizedPnlUsdt,
+            FeesUsdt = feesUsdt,
+            FeeIsEstimated = feeIsEstimated,
+            PnlResult = pnlResult
         };
         RememberEvent(ev);
         _ = PersistEventAsync(ev);
@@ -1357,7 +1572,11 @@ public sealed class CopyMirrorService(
                 QuoteUsdt = ev.QuoteUsdt,
                 LeadOrderTimeMs = ev.LeadOrderTimeMs,
                 DetectDelayMs = ev.DetectDelayMs,
-                ExecDelayMs = ev.ExecDelayMs
+                ExecDelayMs = ev.ExecDelayMs,
+                RealizedPnlUsdt = ev.RealizedPnlUsdt,
+                FeesUsdt = ev.FeesUsdt,
+                FeeIsEstimated = ev.FeeIsEstimated,
+                PnlResult = TruncNullable(ev.PnlResult, 16)
             });
             await db.SaveChangesAsync();
         }
@@ -1395,7 +1614,11 @@ public sealed class CopyMirrorService(
                 QuoteUsdt = r.QuoteUsdt,
                 LeadOrderTimeMs = r.LeadOrderTimeMs,
                 DetectDelayMs = r.DetectDelayMs,
-                ExecDelayMs = r.ExecDelayMs
+                ExecDelayMs = r.ExecDelayMs,
+                RealizedPnlUsdt = r.RealizedPnlUsdt,
+                FeesUsdt = r.FeesUsdt,
+                FeeIsEstimated = r.FeeIsEstimated,
+                PnlResult = r.PnlResult
             }).ToList();
 
             lock (_eventGate)

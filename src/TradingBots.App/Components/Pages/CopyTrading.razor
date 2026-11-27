@@ -329,6 +329,11 @@
         .Where(e => e.IsMovement && e.Action is "BUY" or "SELL")
         .Take(120)
         .ToList();
+    var closedWithPnl = detailMovements
+        .Where(e => e.Action == "SELL" && e.RealizedPnlUsdt is not null)
+        .ToList();
+    var realizedSum = closedWithPnl.Sum(e => e.RealizedPnlUsdt!.Value);
+    var feesSum = closedWithPnl.Where(e => e.FeesUsdt is not null).Sum(e => e.FeesUsdt!.Value);
     var summaryOpen = selectedSession?.OpenSpotQty ?? st.OpenSpotQty;
 }
 <div class="row g-3 mb-4">
@@ -362,6 +367,16 @@
                     {
                         <div class="text-danger mt-1">@selectedSession.LastError</div>
                     }
+                }
+                @if (closedWithPnl.Count > 0)
+                {
+                    <div class="mt-2">
+                        <strong>PnL cerrado:</strong>
+                        <span class="@(realizedSum >= 0 ? "text-success" : "text-danger")">
+                            @(realizedSum >= 0 ? "+" : "")@realizedSum.ToString("0.####") USDT
+                        </span>
+                        <span class="text-muted"> · fees @feesSum.ToString("0.####") · @closedWithPnl.Count cierre(s)</span>
+                    </div>
                 }
                 @if (summaryOpen.Count > 0)
                 {
@@ -400,6 +415,8 @@
                                 <th>Symbol</th>
                                 <th class="text-end">Qty / USDT</th>
                                 <th class="text-end">Precio</th>
+                                <th class="text-end">PnL</th>
+                                <th class="text-end">Fees</th>
                                 <th class="text-end">Delay</th>
                                 <th>Detalle</th>
                             </tr>
@@ -430,6 +447,28 @@
                                         }
                                     </td>
                                     <td class="text-end">@(mv.Price?.ToString("0.####") ?? "—")</td>
+                                    <td class="text-end text-nowrap">
+                                        @if (mv.RealizedPnlUsdt is not null)
+                                        {
+                                            <span class="badge @PnlBadgeClass(mv.PnlResult)">
+                                                @(mv.RealizedPnlUsdt.Value >= 0 ? "+" : "")@mv.RealizedPnlUsdt.Value.ToString("0.####")
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">—</span>
+                                        }
+                                    </td>
+                                    <td class="text-end text-nowrap">
+                                        @if (mv.FeesUsdt is not null)
+                                        {
+                                            <span>@mv.FeesUsdt.Value.ToString("0.####")@(mv.FeeIsEstimated ? "~" : "")</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">—</span>
+                                        }
+                                    </td>
                                     <td class="text-end text-nowrap">
                                         @(mv.DetectDelayMs is null ? "—" : $"{mv.DetectDelayMs}ms")
                                         @if (mv.ExecDelayMs is not null)
@@ -776,6 +815,14 @@
         "BUY" => "text-bg-success",
         "SELL" => "text-bg-danger",
         "SKIP" => "text-bg-secondary",
+        _ => "text-bg-dark"
+    };
+
+    private static string PnlBadgeClass(string? result) => result switch
+    {
+        "profit" => "text-bg-success",
+        "loss" => "text-bg-danger",
+        "breakeven" => "text-bg-secondary",
         _ => "text-bg-dark"
     };
 
