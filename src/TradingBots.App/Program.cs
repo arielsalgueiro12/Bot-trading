@@ -590,6 +590,9 @@ using (var scope = app.Services.CreateScope())
         await db.Database.ExecuteSqlRawAsync("""
             ALTER TABLE "CopyMirrorSessions" ADD COLUMN IF NOT EXISTS "OpenPositionsJson" text NOT NULL DEFAULT '';
             """);
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "CopyMirrorSessions" ADD COLUMN IF NOT EXISTS "MaxOpenPositions" integer NOT NULL DEFAULT 3;
+            """);
     }
 
     if (db.Database.IsSqlite())
@@ -608,7 +611,8 @@ using (var scope = app.Services.CreateScope())
                      """ALTER TABLE CopyMirrorSessions ADD COLUMN AllowFutures INTEGER NOT NULL DEFAULT 0;""",
                      """ALTER TABLE CopyMirrorSessions ADD COLUMN FuturesLeverage INTEGER NOT NULL DEFAULT 1;""",
                      """ALTER TABLE CopyMirrorSessions ADD COLUMN VenueMode INTEGER NOT NULL DEFAULT 0;""",
-                     """ALTER TABLE CopyMirrorSessions ADD COLUMN OpenPositionsJson TEXT NOT NULL DEFAULT '';"""
+                     """ALTER TABLE CopyMirrorSessions ADD COLUMN OpenPositionsJson TEXT NOT NULL DEFAULT '';""",
+                     """ALTER TABLE CopyMirrorSessions ADD COLUMN MaxOpenPositions INTEGER NOT NULL DEFAULT 3;"""
                  })
         {
             try

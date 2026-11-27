@@ -192,22 +192,32 @@
                                @bind:culture="CultureInfo.InvariantCulture" />
                     </div>
                     <div class="col-6">
+                        <label class="form-label small mb-1">Max posiciones abiertas</label>
+                        <input class="form-control form-control-sm" type="number" min="1" max="20" step="1"
+                               @bind="_form.MaxOpenPositions"
+                               @bind:event="oninput"
+                               @bind:culture="CultureInfo.InvariantCulture" />
+                        <div class="form-text">Con ~100 USDT y 30/trade → 3.</div>
+                    </div>
+                </div>
+
+                <div class="row g-2">
+                    <div class="col-6">
                         <label class="form-label small mb-1">Poll (ms)</label>
                         <input class="form-control form-control-sm" type="number" min="2500" step="500"
                                @bind="_form.PollIntervalMs" @bind:event="oninput"
                                @bind:culture="CultureInfo.InvariantCulture" />
                     </div>
+                    @if (_form.VenueMode != CopyMirrorVenueMode.SpotOnly)
+                    {
+                        <div class="col-6">
+                            <label class="form-label small mb-1">Leverage Futures (1–5)</label>
+                            <input class="form-control form-control-sm" type="number" min="1" max="5" step="1"
+                                   @bind="_form.FuturesLeverage" @bind:event="oninput"
+                                   @bind:culture="CultureInfo.InvariantCulture" />
+                        </div>
+                    }
                 </div>
-
-                @if (_form.VenueMode != CopyMirrorVenueMode.SpotOnly)
-                {
-                    <div>
-                        <label class="form-label small mb-1">Leverage Futures (1–5)</label>
-                        <input class="form-control form-control-sm" type="number" min="1" max="5" step="1"
-                               @bind="_form.FuturesLeverage" @bind:event="oninput"
-                               @bind:culture="CultureInfo.InvariantCulture" />
-                    </div>
-                }
 
                 <div class="form-check">
                     <input class="form-check-input" type="checkbox" id="dryRun" @bind="_form.DryRun" />
@@ -256,6 +266,7 @@
                         <th>Modo</th>
                         <th>Venue / wallet</th>
                         <th class="text-end">USDT</th>
+                        <th class="text-end">Max open</th>
                         <th>Warm-up</th>
                         <th>Poll</th>
                         <th class="text-end">Buy/Sell/Skip</th>
@@ -284,6 +295,7 @@
                                 <span>@(s.Settings.LongOnly ? " · L" : " · L/S")</span>
                             </td>
                             <td class="text-end">@s.Settings.QuotePerTradeUsdt.ToString("0.##")</td>
+                            <td class="text-end">@s.Settings.MaxOpenPositions</td>
                             <td>@(s.WarmingUp ? "si" : "no")</td>
                             <td class="small">@(s.LastPollUtc?.ToString("HH:mm:ss") ?? "—")</td>
                             <td class="text-end">@s.MirroredBuys / @s.MirroredSells / @s.Skipped</td>
@@ -440,6 +452,7 @@
         VenueMode = CopyMirrorVenueMode.Auto,
         FuturesLeverage = 1,
         QuotePerTradeUsdt = 30m,
+        MaxOpenPositions = 3,
         PollIntervalMs = 3500
     };
     private BoardTab _boardTab = BoardTab.Spot;
@@ -470,6 +483,9 @@
                 ? first.Settings.FuturesLeverage
                 : 1,
             QuotePerTradeUsdt = first?.Settings.QuotePerTradeUsdt ?? 30m,
+            MaxOpenPositions = first is { Settings.MaxOpenPositions: > 0 }
+                ? first.Settings.MaxOpenPositions
+                : 3,
             PollIntervalMs = first?.Settings.PollIntervalMs ?? 3500
         };
         _uiCts = new CancellationTokenSource();
@@ -613,9 +629,11 @@
             // Enteros estables: evita carrera @bind onchange (click sin blur → valor viejo).
             var quote = decimal.Round(Math.Clamp(_form.QuotePerTradeUsdt, 20m, 5000m), 0, MidpointRounding.AwayFromZero);
             var lev = Math.Clamp(_form.FuturesLeverage <= 0 ? 1 : _form.FuturesLeverage, 1, 5);
+            var maxOpen = Math.Clamp(_form.MaxOpenPositions <= 0 ? 3 : _form.MaxOpenPositions, 1, 20);
             var poll = Math.Clamp(_form.PollIntervalMs <= 0 ? 3500 : _form.PollIntervalMs, 2500, 30_000);
             _form.QuotePerTradeUsdt = quote;
             _form.FuturesLeverage = lev;
+            _form.MaxOpenPositions = maxOpen;
             _form.PollIntervalMs = poll;
 
             Mirror.UpdateSettings(new CopyMirrorSettings
@@ -628,6 +646,7 @@
                 LeadPortfolioId = _form.LeadPortfolioId.Trim(),
                 LeadNickname = _form.LeadNickname,
                 QuotePerTradeUsdt = quote,
+                MaxOpenPositions = maxOpen,
                 PollIntervalMs = poll
             });
 

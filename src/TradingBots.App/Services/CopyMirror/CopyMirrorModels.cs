@@ -85,6 +85,11 @@ public sealed class CopyMirrorSettings
     public string LeadPortfolioId { get; set; } = string.Empty;
     public string LeadNickname { get; set; } = string.Empty;
     public decimal QuotePerTradeUsdt { get; set; } = 15m;
+    /// <summary>
+    /// Maximo de posiciones abiertas a la vez (Spot+Fut L+Fut S).
+    /// Si se alcanza, se omiten nuevos OPEN; los CLOSE siguen.
+    /// </summary>
+    public int MaxOpenPositions { get; set; } = 3;
     /// <summary>Minimo recomendado 3s: el order-history publico de Binance rate-limita fuerte.</summary>
     public int PollIntervalMs { get; set; } = 3500;
 }

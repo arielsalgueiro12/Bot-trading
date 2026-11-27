@@ -159,7 +159,7 @@ public sealed class CopyMirrorService(
                 normalized.Enabled
                     ? $"Mirror {(normalized.DryRun ? "DRY-RUN" : "LIVE")} ON → {DisplayName(session)} " +
                       $"({normalized.LeadPortfolioId}), {Fmt(normalized.QuotePerTradeUsdt)} USDT/trade, " +
-                      $"Venue={normalized.VenueMode}" +
+                      $"maxOpen={normalized.MaxOpenPositions}, Venue={normalized.VenueMode}" +
                       (normalized.AllowFutures ? $" x{normalized.FuturesLeverage}" : "") +
                       $", LongOnly={normalized.LongOnly}."
                     : $"Mirror OFF → {DisplayName(session)}.");
@@ -252,6 +252,7 @@ public sealed class CopyMirrorService(
                     LeadPortfolioId = row.LeadPortfolioId,
                     LeadNickname = row.LeadNickname,
                     QuotePerTradeUsdt = row.QuotePerTradeUsdt,
+                    MaxOpenPositions = row.MaxOpenPositions,
                     PollIntervalMs = row.PollIntervalMs
                 });
 
@@ -304,6 +305,7 @@ public sealed class CopyMirrorService(
             row.VenueMode = (int)settings.VenueMode;
             row.FuturesLeverage = settings.FuturesLeverage;
             row.QuotePerTradeUsdt = settings.QuotePerTradeUsdt;
+            row.MaxOpenPositions = settings.MaxOpenPositions;
             row.PollIntervalMs = settings.PollIntervalMs;
             lock (_gate)
             {
@@ -682,6 +684,17 @@ public sealed class CopyMirrorService(
         var venueTag = venue == MirrorVenue.Spot ? "Spot" : "Futures";
         var actionLabel = intent.IsOpen ? "BUY" : "SELL";
 
+        if (intent.IsOpen && !CanOpenNewPosition(session, order.Symbol, intent.PositionSide, venue.Value, settings))
+        {
+            var openCount = CountOpenPositions(session);
+            PushHubEvent(session, "info",
+                $"[{DisplayName(session)}] OPEN {order.Symbol} omitido: max {settings.MaxOpenPositions} " +
+                $"posiciones abiertas ({openCount}). Esperando un cierre.",
+                order.Symbol, actionLabel, settings.DryRun ? "dryrun" : "live",
+                null, order.AvgPrice, settings.QuotePerTradeUsdt, order.OrderTimeMs, detectDelayMs);
+            return;
+        }
+
         if (settings.DryRun)
         {
             if (intent.IsOpen)
@@ -710,6 +723,70 @@ public sealed class CopyMirrorService(
         }
 
         await ExecuteFuturesAsync(session, order, settings, intent, futExec, detectDelayMs, execStart, ct);
+    }
+
+    private static int CountOpenPositions(MirrorSession session)
+    {
+        var n = 0;
+        foreach (var kv in session.OpenQty)
+        {
+            if (kv.Value > 0m)
+            {
+                n++;
+            }
+        }
+
+        foreach (var kv in session.OpenFutLong)
+        {
+            if (kv.Value > 0m)
+            {
+                n++;
+            }
+        }
+
+        foreach (var kv in session.OpenFutShort)
+        {
+            if (kv.Value > 0m)
+            {
+                n++;
+            }
+        }
+
+        return n;
+    }
+
+    /// <summary>
+    /// Permite OPEN si hay hueco bajo MaxOpenPositions, o si ya hay posicion en el mismo
+    /// simbolo/lado (añadir tamaño no consume un slot nuevo).
+    /// </summary>
+    private static bool CanOpenNewPosition(
+        MirrorSession session,
+        string symbol,
+        string positionSide,
+        MirrorVenue venue,
+        CopyMirrorSettings settings)
+    {
+        var max = Math.Clamp(settings.MaxOpenPositions <= 0 ? 3 : settings.MaxOpenPositions, 1, 20);
+        if (venue == MirrorVenue.Spot)
+        {
+            if (session.OpenQty.TryGetValue(symbol, out var q) && q > 0m)
+            {
+                return true;
+            }
+        }
+        else if (positionSide == "SHORT")
+        {
+            if (session.OpenFutShort.TryGetValue(symbol, out var q) && q > 0m)
+            {
+                return true;
+            }
+        }
+        else if (session.OpenFutLong.TryGetValue(symbol, out var q) && q > 0m)
+        {
+            return true;
+        }
+
+        return CountOpenPositions(session) < max;
     }
 
     private enum MirrorVenue
@@ -1248,6 +1325,7 @@ public sealed class CopyMirrorService(
         LeadNickname = (s.LeadNickname ?? string.Empty).Trim(),
         // Min 20: suelo Binance Futures; el ejecutor puede subir mas (p.ej. BTC min ~100).
         QuotePerTradeUsdt = Math.Clamp(s.QuotePerTradeUsdt <= 0 ? 30m : s.QuotePerTradeUsdt, 20m, 5000m),
+        MaxOpenPositions = Math.Clamp(s.MaxOpenPositions <= 0 ? 3 : s.MaxOpenPositions, 1, 20),
         PollIntervalMs = Math.Clamp(s.PollIntervalMs <= 0 ? 3500 : s.PollIntervalMs, 2500, 30_000)
     };
 
@@ -1261,6 +1339,7 @@ public sealed class CopyMirrorService(
         LeadPortfolioId = s.LeadPortfolioId,
         LeadNickname = s.LeadNickname,
         QuotePerTradeUsdt = s.QuotePerTradeUsdt,
+        MaxOpenPositions = s.MaxOpenPositions,
         PollIntervalMs = s.PollIntervalMs
     };
 

@@ -13,6 +13,7 @@ public sealed class CopyMirrorPersistedSession
     public int VenueMode { get; set; } = 2;
     public int FuturesLeverage { get; set; } = 1;
     public decimal QuotePerTradeUsdt { get; set; } = 15m;
+    public int MaxOpenPositions { get; set; } = 3;
     public int PollIntervalMs { get; set; } = 3500;
     /// <summary>JSON posiciones abiertas: {"spot":{...},"futL":{...},"futS":{...}}.</summary>
     public string OpenPositionsJson { get; set; } = string.Empty;
