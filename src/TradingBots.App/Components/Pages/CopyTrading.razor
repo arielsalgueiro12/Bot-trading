@@ -276,9 +276,7 @@
                     <tbody>
                     @foreach (var s in st.Sessions)
                     {
-                        var selected = string.Equals(_selectedLeadId, s.Settings.LeadPortfolioId, StringComparison.Ordinal);
-                        <tr class="@(selected ? "table-active" : null)" style="cursor:pointer"
-                            @onclick="() => ToggleMirrorDetail(s.Settings.LeadPortfolioId)">
+                        <tr style="cursor:pointer" @onclick="() => OpenMirrorDetail(s.Settings.LeadPortfolioId)">
                             <td>
                                 <div class="fw-semibold">@(string.IsNullOrWhiteSpace(s.Settings.LeadNickname) ? ShortId(s.Settings.LeadPortfolioId) : s.Settings.LeadNickname)</div>
                                 <div class="text-muted small">@ShortId(s.Settings.LeadPortfolioId)</div>
@@ -303,8 +301,8 @@
                             <td class="text-end">@s.MirroredBuys / @s.MirroredSells / @s.Skipped</td>
                             <td class="text-end" @onclick:stopPropagation="true">
                                 <button class="btn btn-sm btn-outline-primary me-1" type="button"
-                                        @onclick="() => ToggleMirrorDetail(s.Settings.LeadPortfolioId)">
-                                    @(selected ? "Cerrar" : "Ver")
+                                        @onclick="() => OpenMirrorDetail(s.Settings.LeadPortfolioId)">
+                                    Ver
                                 </button>
                                 <button class="btn btn-sm btn-outline-danger" type="button"
                                         @onclick="() => StopOneAsync(s.Settings.LeadPortfolioId)">
@@ -321,207 +319,196 @@
 </div>
 
 @{
-    var selectedSession = string.IsNullOrWhiteSpace(_selectedLeadId)
-        ? null
-        : st.Sessions.FirstOrDefault(x => string.Equals(x.Settings.LeadPortfolioId, _selectedLeadId, StringComparison.Ordinal));
-    var detailEvents = Mirror.GetEvents(_selectedLeadId, 400);
-    var detailMovements = detailEvents
+    var hubEvents = Mirror.GetEvents(null, 400);
+    var hubMovements = hubEvents
         .Where(e => e.IsMovement && e.Action is "BUY" or "SELL")
         .Take(120)
         .ToList();
-    var closedWithPnl = detailMovements
-        .Where(e => e.Action == "SELL" && e.RealizedPnlUsdt is not null)
-        .ToList();
-    var realizedSum = closedWithPnl.Sum(e => e.RealizedPnlUsdt!.Value);
-    var feesSum = closedWithPnl.Where(e => e.FeesUsdt is not null).Sum(e => e.FeesUsdt!.Value);
-    var summaryOpen = selectedSession?.OpenSpotQty ?? st.OpenSpotQty;
+    var hubClosed = hubMovements.Where(e => e.Action == "SELL" && e.RealizedPnlUsdt is not null).ToList();
+    var hubPnl = hubClosed.Sum(e => e.RealizedPnlUsdt!.Value);
+    var hubFees = hubClosed.Where(e => e.FeesUsdt is not null).Sum(e => e.FeesUsdt!.Value);
 }
 <div class="row g-3 mb-4">
     <div class="col-md-4">
         <div class="card h-100">
-            <div class="card-header d-flex justify-content-between align-items-center gap-2">
-                <span>@(selectedSession is null ? "Resumen hub" : $"Resumen · {(string.IsNullOrWhiteSpace(selectedSession.Settings.LeadNickname) ? ShortId(selectedSession.Settings.LeadPortfolioId) : selectedSession.Settings.LeadNickname)}")</span>
-                @if (selectedSession is not null)
-                {
-                    <button type="button" class="btn btn-sm btn-outline-light" @onclick="ClearMirrorDetail">Todos</button>
-                }
-            </div>
+            <div class="card-header">Resumen hub</div>
             <div class="card-body small">
-                @if (selectedSession is null)
-                {
-                    <div><strong>Activos:</strong> @st.ActiveCount / @st.MaxConcurrent</div>
-                    <div><strong>Ultimo poll:</strong> @(st.LastPollUtc?.ToString("HH:mm:ss") ?? "—")</div>
-                    <div><strong>Delay poll:</strong> @st.RecommendedDelayMs ms @(st.FailStreak > 0 ? $"(backoff fail={st.FailStreak})" : "")</div>
-                    <div><strong>Vistos / buy / sell:</strong> @st.SeenOrders / @st.MirroredBuys / @st.MirroredSells</div>
-                    <p class="text-muted mb-0 mt-2">Pulsa <strong>Ver</strong> en un mirror para filtrar resumen y traza.</p>
-                }
-                else
-                {
-                    <div><strong>Modo:</strong> @(selectedSession.Settings.DryRun ? "dry-run" : "LIVE")</div>
-                    <div><strong>Venue:</strong> @VenueLabel(selectedSession.Settings.VenueMode) x@(selectedSession.Settings.FuturesLeverage) @(selectedSession.Settings.LongOnly ? "L" : "L/S")</div>
-                    <div><strong>USDT/trade:</strong> @selectedSession.Settings.QuotePerTradeUsdt.ToString("0.##") · max open @selectedSession.Settings.MaxOpenPositions</div>
-                    <div><strong>Ultimo poll:</strong> @(selectedSession.LastPollUtc?.ToString("HH:mm:ss") ?? "—")</div>
-                    <div><strong>Vistos / buy / sell:</strong> @selectedSession.SeenOrders / @selectedSession.MirroredBuys / @selectedSession.MirroredSells</div>
-                    <div><strong>Warm-up:</strong> @(selectedSession.WarmingUp ? "si" : "no") · fail @selectedSession.FailStreak</div>
-                    @if (!string.IsNullOrWhiteSpace(selectedSession.LastError))
-                    {
-                        <div class="text-danger mt-1">@selectedSession.LastError</div>
-                    }
-                }
-                @if (closedWithPnl.Count > 0)
+                <div><strong>Activos:</strong> @st.ActiveCount / @st.MaxConcurrent</div>
+                <div><strong>Ultimo poll:</strong> @(st.LastPollUtc?.ToString("HH:mm:ss") ?? "—")</div>
+                <div><strong>Delay poll:</strong> @st.RecommendedDelayMs ms @(st.FailStreak > 0 ? $"(backoff fail={st.FailStreak})" : "")</div>
+                <div><strong>Vistos / buy / sell:</strong> @st.SeenOrders / @st.MirroredBuys / @st.MirroredSells</div>
+                @if (hubClosed.Count > 0)
                 {
                     <div class="mt-2">
                         <strong>PnL cerrado:</strong>
-                        <span class="@(realizedSum >= 0 ? "text-success" : "text-danger")">
-                            @(realizedSum >= 0 ? "+" : "")@realizedSum.ToString("0.####") USDT
+                        <span class="@(hubPnl >= 0 ? "text-success" : "text-danger")">
+                            @(hubPnl >= 0 ? "+" : "")@hubPnl.ToString("0.####") USDT
                         </span>
-                        <span class="text-muted"> · fees @feesSum.ToString("0.####") · @closedWithPnl.Count cierre(s)</span>
+                        <span class="text-muted"> · fees @hubFees.ToString("0.####")</span>
                     </div>
                 }
-                @if (summaryOpen.Count > 0)
+                @if (st.OpenSpotQty.Count > 0)
                 {
                     <div class="mt-2"><strong>Posiciones:</strong>
-                        @foreach (var kv in summaryOpen)
+                        @foreach (var kv in st.OpenSpotQty)
                         {
                             <div>@kv.Key: @kv.Value.ToString("0.######")</div>
                         }
                     </div>
                 }
+                <p class="text-muted mb-0 mt-2">Pulsa <strong>Ver</strong> en un mirror para abrir su ficha completa.</p>
             </div>
         </div>
     </div>
     <div class="col-md-8">
         <div class="card h-100">
-            <div class="card-header">
-                @(selectedSession is null ? "Movimientos (todos · persistidos)" : "Movimientos de este mirror · persistidos")
-            </div>
+            <div class="card-header">Movimientos (todos · persistidos)</div>
             <div class="card-body p-0">
-                @if (detailMovements.Count == 0)
+                @if (hubMovements.Count == 0)
                 {
                     <p class="text-muted small p-3 mb-0">
-                        Aun no hay compras/ventas@(selectedSession is null ? "" : " de este lead"). La traza se guarda en DB y sobrevive reinicios.
+                        Aun no hay compras/ventas. La traza se guarda en DB y sobrevive reinicios.
                     </p>
                 }
                 else
                 {
-                    <div class="table-responsive" style="max-height: 320px; overflow:auto;">
-                        <table class="table table-sm mb-0 align-middle">
-                            <thead>
-                            <tr>
-                                <th>UTC</th>
-                                <th>Lead</th>
-                                <th>Accion</th>
-                                <th>Modo</th>
-                                <th>Symbol</th>
-                                <th class="text-end">Qty / USDT</th>
-                                <th class="text-end">Precio</th>
-                                <th class="text-end">PnL</th>
-                                <th class="text-end">Fees</th>
-                                <th class="text-end">Delay</th>
-                                <th>Detalle</th>
-                            </tr>
-                            </thead>
-                            <tbody>
-                            @foreach (var mv in detailMovements)
-                            {
-                                <tr>
-                                    <td class="text-nowrap">@mv.Utc.ToString("yyyy-MM-dd HH:mm:ss")</td>
-                                    <td class="small">@(string.IsNullOrWhiteSpace(mv.LeadNickname) ? ShortId(mv.LeadPortfolioId ?? "") : mv.LeadNickname)</td>
-                                    <td>
-                                        <span class="badge @(ActionBadgeClass(mv.Action))">@(mv.Action ?? mv.Kind)</span>
-                                    </td>
-                                    <td class="small">@(mv.Mode ?? mv.Kind)</td>
-                                    <td>@(mv.Symbol ?? "—")</td>
-                                    <td class="text-end text-nowrap">
-                                        @if (mv.QuoteUsdt is not null)
-                                        {
-                                            <span>~@mv.QuoteUsdt.Value.ToString("0.##") USDT</span>
-                                        }
-                                        else if (mv.Qty is not null)
-                                        {
-                                            <span>@mv.Qty.Value.ToString("0.######")</span>
-                                        }
-                                        else
-                                        {
-                                            <span>—</span>
-                                        }
-                                    </td>
-                                    <td class="text-end">@(mv.Price?.ToString("0.####") ?? "—")</td>
-                                    <td class="text-end text-nowrap">
-                                        @if (mv.RealizedPnlUsdt is not null)
-                                        {
-                                            <span class="badge @PnlBadgeClass(mv.PnlResult)">
-                                                @(mv.RealizedPnlUsdt.Value >= 0 ? "+" : "")@mv.RealizedPnlUsdt.Value.ToString("0.####")
-                                            </span>
-                                        }
-                                        else
-                                        {
-                                            <span class="text-muted">—</span>
-                                        }
-                                    </td>
-                                    <td class="text-end text-nowrap">
-                                        @if (mv.FeesUsdt is not null)
-                                        {
-                                            <span>@mv.FeesUsdt.Value.ToString("0.####")@(mv.FeeIsEstimated ? "~" : "")</span>
-                                        }
-                                        else
-                                        {
-                                            <span class="text-muted">—</span>
-                                        }
-                                    </td>
-                                    <td class="text-end text-nowrap">
-                                        @(mv.DetectDelayMs is null ? "—" : $"{mv.DetectDelayMs}ms")
-                                        @if (mv.ExecDelayMs is not null)
-                                        {
-                                            <span> / @mv.ExecDelayMs ms</span>
-                                        }
-                                    </td>
-                                    <td class="small">@mv.Message</td>
-                                </tr>
-                            }
-                            </tbody>
-                        </table>
-                    </div>
+                    @RenderMovementsTable(hubMovements)
                 }
             </div>
         </div>
     </div>
 </div>
 
-<details class="mb-4" open="@(!string.IsNullOrWhiteSpace(_selectedLeadId))">
-    <summary class="text-muted small">
-        Traza completa@(selectedSession is null ? " (hub)" : " del mirror") — persistida en DB
-    </summary>
+<details class="mb-4">
+    <summary class="text-muted small">Traza completa (hub) — persistida en DB</summary>
     <div class="card mt-2">
         <div class="card-body p-0">
-            <div class="table-responsive" style="max-height: 360px; overflow:auto;">
-                <table class="table table-sm mb-0">
-                    <thead>
-                    <tr>
-                        <th>UTC</th>
-                        <th>Lead</th>
-                        <th>Tipo</th>
-                        <th>Symbol</th>
-                        <th>Detalle</th>
-                    </tr>
-                    </thead>
-                    <tbody>
-                    @foreach (var ev in detailEvents.Take(300))
-                    {
-                        <tr>
-                            <td class="text-nowrap">@ev.Utc.ToString("yyyy-MM-dd HH:mm:ss")</td>
-                            <td class="small">@(string.IsNullOrWhiteSpace(ev.LeadNickname) ? ShortId(ev.LeadPortfolioId ?? "") : ev.LeadNickname)</td>
-                            <td>@ev.Kind</td>
-                            <td>@(ev.Symbol ?? "—")</td>
-                            <td class="small">@ev.Message</td>
-                        </tr>
-                    }
-                    </tbody>
-                </table>
-            </div>
+            @RenderEventsTable(hubEvents.Take(300))
         </div>
     </div>
 </details>
+
+@if (!string.IsNullOrWhiteSpace(_selectedLeadId))
+{
+    var selectedSession = st.Sessions.FirstOrDefault(x =>
+        string.Equals(x.Settings.LeadPortfolioId, _selectedLeadId, StringComparison.Ordinal));
+    var modalEvents = Mirror.GetEvents(_selectedLeadId, 500);
+    var modalMovements = modalEvents
+        .Where(e => e.IsMovement && e.Action is "BUY" or "SELL")
+        .Take(200)
+        .ToList();
+    var modalClosed = modalMovements.Where(e => e.Action == "SELL" && e.RealizedPnlUsdt is not null).ToList();
+    var modalPnl = modalClosed.Sum(e => e.RealizedPnlUsdt!.Value);
+    var modalFees = modalClosed.Where(e => e.FeesUsdt is not null).Sum(e => e.FeesUsdt!.Value);
+    var titleName = selectedSession is null
+        ? ShortId(_selectedLeadId)
+        : (string.IsNullOrWhiteSpace(selectedSession.Settings.LeadNickname)
+            ? ShortId(selectedSession.Settings.LeadPortfolioId)
+            : selectedSession.Settings.LeadNickname);
+
+    <div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true"
+         style="background: rgba(10, 12, 16, 0.72);" @onclick="ClearMirrorDetail">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable modal-fullscreen-lg-down"
+             style="max-width: min(1180px, 96vw);" @onclick:stopPropagation="true">
+            <div class="modal-content border-0 shadow-lg">
+                <div class="modal-header">
+                    <div>
+                        <h5 class="modal-title mb-0">Mirror · @titleName</h5>
+                        <div class="text-muted small">@ShortId(_selectedLeadId) · detalle completo</div>
+                    </div>
+                    <button type="button" class="btn-close" aria-label="Cerrar" @onclick="ClearMirrorDetail"></button>
+                </div>
+                <div class="modal-body">
+                    @if (selectedSession is null)
+                    {
+                        <div class="alert alert-secondary mb-3">
+                            Este mirror ya no esta activo. Se muestra la traza persistida del lead.
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6">
+                                <div class="border rounded p-3 small h-100">
+                                    <div class="fw-semibold mb-2">Configuracion</div>
+                                    <div><strong>Modo:</strong> @(selectedSession.Settings.DryRun ? "dry-run" : "LIVE")</div>
+                                    <div><strong>Venue:</strong> @VenueLabel(selectedSession.Settings.VenueMode) x@(selectedSession.Settings.FuturesLeverage) @(selectedSession.Settings.LongOnly ? "L" : "L/S")</div>
+                                    <div><strong>USDT/trade:</strong> @selectedSession.Settings.QuotePerTradeUsdt.ToString("0.##") · max open @selectedSession.Settings.MaxOpenPositions</div>
+                                    <div><strong>Poll:</strong> @selectedSession.Settings.PollIntervalMs ms · ultimo @(selectedSession.LastPollUtc?.ToString("HH:mm:ss") ?? "—")</div>
+                                    <div><strong>Warm-up:</strong> @(selectedSession.WarmingUp ? "si" : "no") · fail @selectedSession.FailStreak</div>
+                                    @if (!string.IsNullOrWhiteSpace(selectedSession.LastError))
+                                    {
+                                        <div class="text-danger mt-1">@selectedSession.LastError</div>
+                                    }
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="border rounded p-3 small h-100">
+                                    <div class="fw-semibold mb-2">Resultado</div>
+                                    <div><strong>Vistos / buy / sell:</strong> @selectedSession.SeenOrders / @selectedSession.MirroredBuys / @selectedSession.MirroredSells</div>
+                                    @if (modalClosed.Count > 0)
+                                    {
+                                        <div class="mt-1">
+                                            <strong>PnL cerrado:</strong>
+                                            <span class="@(modalPnl >= 0 ? "text-success" : "text-danger")">
+                                                @(modalPnl >= 0 ? "+" : "")@modalPnl.ToString("0.####") USDT
+                                            </span>
+                                            <span class="text-muted"> · fees @modalFees.ToString("0.####") · @modalClosed.Count cierre(s)</span>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div class="text-muted mt-1">Aun no hay cierres con PnL calculado.</div>
+                                    }
+                                    @if (selectedSession.OpenSpotQty.Count > 0)
+                                    {
+                                        <div class="mt-2"><strong>Posiciones abiertas:</strong>
+                                            @foreach (var kv in selectedSession.OpenSpotQty)
+                                            {
+                                                <div>@kv.Key: @kv.Value.ToString("0.######")</div>
+                                            }
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div class="text-muted mt-2">Sin posiciones abiertas en este mirror.</div>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                    }
+
+                    <div class="fw-semibold mb-2">Movimientos</div>
+                    <div class="border rounded mb-3">
+                        @if (modalMovements.Count == 0)
+                        {
+                            <p class="text-muted small p-3 mb-0">Aun no hay compras/ventas de este lead.</p>
+                        }
+                        else
+                        {
+                            @RenderMovementsTable(modalMovements, maxHeight: "360px")
+                        }
+                    </div>
+
+                    <div class="fw-semibold mb-2">Traza completa</div>
+                    <div class="border rounded">
+                        @RenderEventsTable(modalEvents.Take(400), maxHeight: "420px")
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    @if (selectedSession is not null)
+                    {
+                        <button type="button" class="btn btn-outline-danger me-auto"
+                                @onclick="() => StopOneAsync(selectedSession.Settings.LeadPortfolioId)">
+                            Detener mirror
+                        </button>
+                    }
+                    <button type="button" class="btn btn-secondary" @onclick="ClearMirrorDetail">Cerrar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
 
 <div class="alert alert-warning border-0 mb-0" role="status">
     Limite real: Binance no publica fills tick-a-tick. Delay tipico = poll (~1–3s) + refresco del order-history.
@@ -781,14 +768,121 @@
         return Task.CompletedTask;
     }
 
-    private void ToggleMirrorDetail(string leadPortfolioId)
-    {
-        _selectedLeadId = string.Equals(_selectedLeadId, leadPortfolioId, StringComparison.Ordinal)
-            ? null
-            : leadPortfolioId;
-    }
+    private void OpenMirrorDetail(string leadPortfolioId) =>
+        _selectedLeadId = leadPortfolioId;
 
     private void ClearMirrorDetail() => _selectedLeadId = null;
+
+    private RenderFragment RenderMovementsTable(IReadOnlyList<CopyMirrorEvent> movements, string maxHeight = "320px") => __builder =>
+    {
+        <div class="table-responsive" style="@($"max-height:{maxHeight};overflow:auto;")">
+            <table class="table table-sm mb-0 align-middle">
+                <thead>
+                <tr>
+                    <th>UTC</th>
+                    <th>Lead</th>
+                    <th>Accion</th>
+                    <th>Modo</th>
+                    <th>Symbol</th>
+                    <th class="text-end">Qty / USDT</th>
+                    <th class="text-end">Precio</th>
+                    <th class="text-end">PnL</th>
+                    <th class="text-end">Fees</th>
+                    <th class="text-end">Delay</th>
+                    <th>Detalle</th>
+                </tr>
+                </thead>
+                <tbody>
+                @foreach (var mv in movements)
+                {
+                    <tr>
+                        <td class="text-nowrap">@mv.Utc.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                        <td class="small">@(string.IsNullOrWhiteSpace(mv.LeadNickname) ? ShortId(mv.LeadPortfolioId ?? "") : mv.LeadNickname)</td>
+                        <td>
+                            <span class="badge @(ActionBadgeClass(mv.Action))">@(mv.Action ?? mv.Kind)</span>
+                        </td>
+                        <td class="small">@(mv.Mode ?? mv.Kind)</td>
+                        <td>@(mv.Symbol ?? "—")</td>
+                        <td class="text-end text-nowrap">
+                            @if (mv.QuoteUsdt is not null)
+                            {
+                                <span>~@mv.QuoteUsdt.Value.ToString("0.##") USDT</span>
+                            }
+                            else if (mv.Qty is not null)
+                            {
+                                <span>@mv.Qty.Value.ToString("0.######")</span>
+                            }
+                            else
+                            {
+                                <span>—</span>
+                            }
+                        </td>
+                        <td class="text-end">@(mv.Price?.ToString("0.####") ?? "—")</td>
+                        <td class="text-end text-nowrap">
+                            @if (mv.RealizedPnlUsdt is not null)
+                            {
+                                <span class="badge @PnlBadgeClass(mv.PnlResult)">
+                                    @(mv.RealizedPnlUsdt.Value >= 0 ? "+" : "")@mv.RealizedPnlUsdt.Value.ToString("0.####")
+                                </span>
+                            }
+                            else
+                            {
+                                <span class="text-muted">—</span>
+                            }
+                        </td>
+                        <td class="text-end text-nowrap">
+                            @if (mv.FeesUsdt is not null)
+                            {
+                                <span>@mv.FeesUsdt.Value.ToString("0.####")@(mv.FeeIsEstimated ? "~" : "")</span>
+                            }
+                            else
+                            {
+                                <span class="text-muted">—</span>
+                            }
+                        </td>
+                        <td class="text-end text-nowrap">
+                            @(mv.DetectDelayMs is null ? "—" : $"{mv.DetectDelayMs}ms")
+                            @if (mv.ExecDelayMs is not null)
+                            {
+                                <span> / @mv.ExecDelayMs ms</span>
+                            }
+                        </td>
+                        <td class="small">@mv.Message</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    };
+
+    private RenderFragment RenderEventsTable(IEnumerable<CopyMirrorEvent> events, string maxHeight = "360px") => __builder =>
+    {
+        <div class="table-responsive" style="@($"max-height:{maxHeight};overflow:auto;")">
+            <table class="table table-sm mb-0">
+                <thead>
+                <tr>
+                    <th>UTC</th>
+                    <th>Lead</th>
+                    <th>Tipo</th>
+                    <th>Symbol</th>
+                    <th>Detalle</th>
+                </tr>
+                </thead>
+                <tbody>
+                @foreach (var ev in events)
+                {
+                    <tr>
+                        <td class="text-nowrap">@ev.Utc.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                        <td class="small">@(string.IsNullOrWhiteSpace(ev.LeadNickname) ? ShortId(ev.LeadPortfolioId ?? "") : ev.LeadNickname)</td>
+                        <td>@ev.Kind</td>
+                        <td>@(ev.Symbol ?? "—")</td>
+                        <td class="small">@ev.Message</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    };
 
     private static string VenueLabel(CopyMirrorVenueMode mode) => mode switch
     {
