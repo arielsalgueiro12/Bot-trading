@@ -165,6 +165,58 @@ body {
     max-height: min(72vh, 520px);
 }
 
+.tb-mirror-detail-backdrop {
+    background: rgba(8, 12, 18, 0.78);
+    backdrop-filter: blur(4px);
+    z-index: 1060;
+}
+
+.tb-mirror-detail-modal {
+    background: var(--tb-bg-elevated);
+    color: var(--tb-text);
+    border: 1px solid var(--tb-border);
+    border-radius: var(--tb-radius);
+    box-shadow: var(--tb-shadow);
+}
+
+.tb-mirror-detail-modal .modal-header,
+.tb-mirror-detail-modal .modal-footer {
+    border-color: var(--tb-border);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.tb-mirror-detail-modal .modal-title {
+    color: var(--tb-text);
+}
+
+.tb-mirror-detail-modal .modal-body {
+    color: var(--tb-text);
+}
+
+.tb-mirror-detail-modal .border {
+    border-color: var(--tb-border) !important;
+    background: rgba(0, 0, 0, 0.22);
+}
+
+.tb-mirror-detail-modal .table {
+    --bs-table-bg: transparent;
+    --bs-table-color: var(--tb-text);
+    --bs-table-border-color: var(--tb-border);
+    --bs-table-striped-bg: rgba(255, 255, 255, 0.04);
+    --bs-table-striped-color: var(--tb-text);
+    --bs-table-hover-bg: rgba(255, 255, 255, 0.06);
+    --bs-table-hover-color: var(--tb-text);
+    color: var(--tb-text);
+}
+
+.tb-mirror-detail-modal .text-muted {
+    color: var(--tb-text-muted) !important;
+}
+
+.tb-mirror-detail-modal .btn-close {
+    filter: invert(1) grayscale(100%) brightness(200%);
+}
+
 .tb-main .card {
     background: var(--tb-bg-elevated);
     border: 1px solid var(--tb-border);
