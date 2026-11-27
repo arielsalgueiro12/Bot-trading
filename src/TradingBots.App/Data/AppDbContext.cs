@@ -14,6 +14,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<MlTradeObservation> MlTradeObservations => Set<MlTradeObservation>();
     public DbSet<MarketCandle> MarketCandles => Set<MarketCandle>();
     public DbSet<CopyMirrorPersistedSession> CopyMirrorSessions => Set<CopyMirrorPersistedSession>();
+    public DbSet<CopyMirrorPersistedEvent> CopyMirrorEvents => Set<CopyMirrorPersistedEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -169,6 +170,24 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             entity.Property(x => x.QuotePerTradeUsdt).HasColumnType("decimal(18,2)");
             entity.Property(x => x.OpenPositionsJson).HasMaxLength(4000);
             entity.HasIndex(x => x.Enabled);
+        });
+
+        modelBuilder.Entity<CopyMirrorPersistedEvent>(entity =>
+        {
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Id).ValueGeneratedOnAdd();
+            entity.Property(x => x.Kind).HasMaxLength(24);
+            entity.Property(x => x.Message).HasMaxLength(2000);
+            entity.Property(x => x.LeadPortfolioId).HasMaxLength(40);
+            entity.Property(x => x.LeadNickname).HasMaxLength(120);
+            entity.Property(x => x.Symbol).HasMaxLength(32);
+            entity.Property(x => x.Action).HasMaxLength(16);
+            entity.Property(x => x.Mode).HasMaxLength(16);
+            entity.Property(x => x.Qty).HasColumnType("decimal(18,8)");
+            entity.Property(x => x.Price).HasColumnType("decimal(18,8)");
+            entity.Property(x => x.QuoteUsdt).HasColumnType("decimal(18,2)");
+            entity.HasIndex(x => x.Utc);
+            entity.HasIndex(x => new { x.LeadPortfolioId, x.Utc });
         });
     }
 }

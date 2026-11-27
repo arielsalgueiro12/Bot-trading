@@ -276,7 +276,9 @@
                     <tbody>
                     @foreach (var s in st.Sessions)
                     {
-                        <tr>
+                        var selected = string.Equals(_selectedLeadId, s.Settings.LeadPortfolioId, StringComparison.Ordinal);
+                        <tr class="@(selected ? "table-active" : null)" style="cursor:pointer"
+                            @onclick="() => ToggleMirrorDetail(s.Settings.LeadPortfolioId)">
                             <td>
                                 <div class="fw-semibold">@(string.IsNullOrWhiteSpace(s.Settings.LeadNickname) ? ShortId(s.Settings.LeadPortfolioId) : s.Settings.LeadNickname)</div>
                                 <div class="text-muted small">@ShortId(s.Settings.LeadPortfolioId)</div>
@@ -299,7 +301,11 @@
                             <td>@(s.WarmingUp ? "si" : "no")</td>
                             <td class="small">@(s.LastPollUtc?.ToString("HH:mm:ss") ?? "—")</td>
                             <td class="text-end">@s.MirroredBuys / @s.MirroredSells / @s.Skipped</td>
-                            <td class="text-end">
+                            <td class="text-end" @onclick:stopPropagation="true">
+                                <button class="btn btn-sm btn-outline-primary me-1" type="button"
+                                        @onclick="() => ToggleMirrorDetail(s.Settings.LeadPortfolioId)">
+                                    @(selected ? "Cerrar" : "Ver")
+                                </button>
                                 <button class="btn btn-sm btn-outline-danger" type="button"
                                         @onclick="() => StopOneAsync(s.Settings.LeadPortfolioId)">
                                     Detener
@@ -314,19 +320,53 @@
     </div>
 </div>
 
+@{
+    var selectedSession = string.IsNullOrWhiteSpace(_selectedLeadId)
+        ? null
+        : st.Sessions.FirstOrDefault(x => string.Equals(x.Settings.LeadPortfolioId, _selectedLeadId, StringComparison.Ordinal));
+    var detailEvents = Mirror.GetEvents(_selectedLeadId, 400);
+    var detailMovements = detailEvents
+        .Where(e => e.IsMovement && e.Action is "BUY" or "SELL")
+        .Take(120)
+        .ToList();
+    var summaryOpen = selectedSession?.OpenSpotQty ?? st.OpenSpotQty;
+}
 <div class="row g-3 mb-4">
     <div class="col-md-4">
         <div class="card h-100">
-            <div class="card-header">Resumen hub</div>
-            <div class="card-body small">
-                <div><strong>Activos:</strong> @st.ActiveCount / @st.MaxConcurrent</div>
-                <div><strong>Ultimo poll:</strong> @(st.LastPollUtc?.ToString("HH:mm:ss") ?? "—")</div>
-                <div><strong>Delay poll:</strong> @st.RecommendedDelayMs ms @(st.FailStreak > 0 ? $"(backoff fail={st.FailStreak})" : "")</div>
-                <div><strong>Vistos / buy / sell / skip:</strong> @st.SeenOrders / @st.MirroredBuys / @st.MirroredSells / @st.Skipped</div>
-                @if (st.OpenSpotQty.Count > 0)
+            <div class="card-header d-flex justify-content-between align-items-center gap-2">
+                <span>@(selectedSession is null ? "Resumen hub" : $"Resumen · {(string.IsNullOrWhiteSpace(selectedSession.Settings.LeadNickname) ? ShortId(selectedSession.Settings.LeadPortfolioId) : selectedSession.Settings.LeadNickname)}")</span>
+                @if (selectedSession is not null)
                 {
-                    <div class="mt-2"><strong>Posiciones mirror:</strong>
-                        @foreach (var kv in st.OpenSpotQty)
+                    <button type="button" class="btn btn-sm btn-outline-light" @onclick="ClearMirrorDetail">Todos</button>
+                }
+            </div>
+            <div class="card-body small">
+                @if (selectedSession is null)
+                {
+                    <div><strong>Activos:</strong> @st.ActiveCount / @st.MaxConcurrent</div>
+                    <div><strong>Ultimo poll:</strong> @(st.LastPollUtc?.ToString("HH:mm:ss") ?? "—")</div>
+                    <div><strong>Delay poll:</strong> @st.RecommendedDelayMs ms @(st.FailStreak > 0 ? $"(backoff fail={st.FailStreak})" : "")</div>
+                    <div><strong>Vistos / buy / sell:</strong> @st.SeenOrders / @st.MirroredBuys / @st.MirroredSells</div>
+                    <p class="text-muted mb-0 mt-2">Pulsa <strong>Ver</strong> en un mirror para filtrar resumen y traza.</p>
+                }
+                else
+                {
+                    <div><strong>Modo:</strong> @(selectedSession.Settings.DryRun ? "dry-run" : "LIVE")</div>
+                    <div><strong>Venue:</strong> @VenueLabel(selectedSession.Settings.VenueMode) x@(selectedSession.Settings.FuturesLeverage) @(selectedSession.Settings.LongOnly ? "L" : "L/S")</div>
+                    <div><strong>USDT/trade:</strong> @selectedSession.Settings.QuotePerTradeUsdt.ToString("0.##") · max open @selectedSession.Settings.MaxOpenPositions</div>
+                    <div><strong>Ultimo poll:</strong> @(selectedSession.LastPollUtc?.ToString("HH:mm:ss") ?? "—")</div>
+                    <div><strong>Vistos / buy / sell:</strong> @selectedSession.SeenOrders / @selectedSession.MirroredBuys / @selectedSession.MirroredSells</div>
+                    <div><strong>Warm-up:</strong> @(selectedSession.WarmingUp ? "si" : "no") · fail @selectedSession.FailStreak</div>
+                    @if (!string.IsNullOrWhiteSpace(selectedSession.LastError))
+                    {
+                        <div class="text-danger mt-1">@selectedSession.LastError</div>
+                    }
+                }
+                @if (summaryOpen.Count > 0)
+                {
+                    <div class="mt-2"><strong>Posiciones:</strong>
+                        @foreach (var kv in summaryOpen)
                         {
                             <div>@kv.Key: @kv.Value.ToString("0.######")</div>
                         }
@@ -337,12 +377,14 @@
     </div>
     <div class="col-md-8">
         <div class="card h-100">
-            <div class="card-header">Movimientos (todos los mirrors)</div>
+            <div class="card-header">
+                @(selectedSession is null ? "Movimientos (todos · persistidos)" : "Movimientos de este mirror · persistidos")
+            </div>
             <div class="card-body p-0">
-                @if (st.RecentMovements.Count == 0)
+                @if (detailMovements.Count == 0)
                 {
                     <p class="text-muted small p-3 mb-0">
-                        Aun no hay compras/ventas. Con el mirror activo apareceran aqui cuando el lead opere.
+                        Aun no hay compras/ventas@(selectedSession is null ? "" : " de este lead"). La traza se guarda en DB y sobrevive reinicios.
                     </p>
                 }
                 else
@@ -363,10 +405,10 @@
                             </tr>
                             </thead>
                             <tbody>
-                            @foreach (var mv in st.RecentMovements)
+                            @foreach (var mv in detailMovements)
                             {
                                 <tr>
-                                    <td class="text-nowrap">@mv.Utc.ToString("HH:mm:ss")</td>
+                                    <td class="text-nowrap">@mv.Utc.ToString("yyyy-MM-dd HH:mm:ss")</td>
                                     <td class="small">@(string.IsNullOrWhiteSpace(mv.LeadNickname) ? ShortId(mv.LeadPortfolioId ?? "") : mv.LeadNickname)</td>
                                     <td>
                                         <span class="badge @(ActionBadgeClass(mv.Action))">@(mv.Action ?? mv.Kind)</span>
@@ -407,25 +449,31 @@
     </div>
 </div>
 
-<details class="mb-4">
-    <summary class="text-muted small">Log tecnico completo</summary>
+<details class="mb-4" open="@(!string.IsNullOrWhiteSpace(_selectedLeadId))">
+    <summary class="text-muted small">
+        Traza completa@(selectedSession is null ? " (hub)" : " del mirror") — persistida en DB
+    </summary>
     <div class="card mt-2">
         <div class="card-body p-0">
-            <div class="table-responsive" style="max-height: 220px; overflow:auto;">
+            <div class="table-responsive" style="max-height: 360px; overflow:auto;">
                 <table class="table table-sm mb-0">
                     <thead>
                     <tr>
                         <th>UTC</th>
+                        <th>Lead</th>
                         <th>Tipo</th>
+                        <th>Symbol</th>
                         <th>Detalle</th>
                     </tr>
                     </thead>
                     <tbody>
-                    @foreach (var ev in st.RecentEvents)
+                    @foreach (var ev in detailEvents.Take(300))
                     {
                         <tr>
-                            <td class="text-nowrap">@ev.Utc.ToString("HH:mm:ss")</td>
+                            <td class="text-nowrap">@ev.Utc.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td class="small">@(string.IsNullOrWhiteSpace(ev.LeadNickname) ? ShortId(ev.LeadPortfolioId ?? "") : ev.LeadNickname)</td>
                             <td>@ev.Kind</td>
+                            <td>@(ev.Symbol ?? "—")</td>
                             <td class="small">@ev.Message</td>
                         </tr>
                     }
@@ -458,6 +506,7 @@
     private BoardTab _boardTab = BoardTab.Spot;
     private string _futuresSort = "PNL";
     private string _futuresNickname = "";
+    private string? _selectedLeadId;
     private bool _loadingBoard;
     private bool _starting;
     private string? _error;
@@ -683,10 +732,24 @@
     private Task StopOneAsync(string leadPortfolioId)
     {
         Mirror.Stop(leadPortfolioId);
+        if (string.Equals(_selectedLeadId, leadPortfolioId, StringComparison.Ordinal))
+        {
+            _selectedLeadId = null;
+        }
+
         _info = $"Mirror detenido: {ShortId(leadPortfolioId)}";
         _error = null;
         return Task.CompletedTask;
     }
+
+    private void ToggleMirrorDetail(string leadPortfolioId)
+    {
+        _selectedLeadId = string.Equals(_selectedLeadId, leadPortfolioId, StringComparison.Ordinal)
+            ? null
+            : leadPortfolioId;
+    }
+
+    private void ClearMirrorDetail() => _selectedLeadId = null;
 
     private static string VenueLabel(CopyMirrorVenueMode mode) => mode switch
     {

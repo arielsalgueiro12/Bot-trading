@@ -593,6 +593,38 @@ using (var scope = app.Services.CreateScope())
         await db.Database.ExecuteSqlRawAsync("""
             ALTER TABLE "CopyMirrorSessions" ADD COLUMN IF NOT EXISTS "MaxOpenPositions" integer NOT NULL DEFAULT 3;
             """);
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "CopyMirrorSessions" ADD COLUMN IF NOT EXISTS "MirroredBuys" integer NOT NULL DEFAULT 0;
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            ALTER TABLE "CopyMirrorSessions" ADD COLUMN IF NOT EXISTS "MirroredSells" integer NOT NULL DEFAULT 0;
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "CopyMirrorEvents"(
+                "Id" bigserial PRIMARY KEY,
+                "Utc" timestamp with time zone NOT NULL,
+                "Kind" varchar(24) NOT NULL DEFAULT 'info',
+                "Message" varchar(2000) NOT NULL DEFAULT '',
+                "LeadPortfolioId" varchar(40) NOT NULL DEFAULT '',
+                "LeadNickname" varchar(120) NOT NULL DEFAULT '',
+                "Symbol" varchar(32) NULL,
+                "Action" varchar(16) NULL,
+                "Mode" varchar(16) NULL,
+                "Qty" numeric(18,8) NULL,
+                "Price" numeric(18,8) NULL,
+                "QuoteUsdt" numeric(18,2) NULL,
+                "LeadOrderTimeMs" bigint NULL,
+                "DetectDelayMs" integer NULL,
+                "ExecDelayMs" integer NULL
+            );
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE INDEX IF NOT EXISTS "IX_CopyMirrorEvents_Utc" ON "CopyMirrorEvents"("Utc");
+            """);
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE INDEX IF NOT EXISTS "IX_CopyMirrorEvents_Lead_Utc"
+            ON "CopyMirrorEvents"("LeadPortfolioId", "Utc");
+            """);
     }
 
     if (db.Database.IsSqlite())
@@ -612,7 +644,9 @@ using (var scope = app.Services.CreateScope())
                      """ALTER TABLE CopyMirrorSessions ADD COLUMN FuturesLeverage INTEGER NOT NULL DEFAULT 1;""",
                      """ALTER TABLE CopyMirrorSessions ADD COLUMN VenueMode INTEGER NOT NULL DEFAULT 0;""",
                      """ALTER TABLE CopyMirrorSessions ADD COLUMN OpenPositionsJson TEXT NOT NULL DEFAULT '';""",
-                     """ALTER TABLE CopyMirrorSessions ADD COLUMN MaxOpenPositions INTEGER NOT NULL DEFAULT 3;"""
+                     """ALTER TABLE CopyMirrorSessions ADD COLUMN MaxOpenPositions INTEGER NOT NULL DEFAULT 3;""",
+                     """ALTER TABLE CopyMirrorSessions ADD COLUMN MirroredBuys INTEGER NOT NULL DEFAULT 0;""",
+                     """ALTER TABLE CopyMirrorSessions ADD COLUMN MirroredSells INTEGER NOT NULL DEFAULT 0;"""
                  })
         {
             try
@@ -622,6 +656,33 @@ using (var scope = app.Services.CreateScope())
             catch (SqliteException ex) when (ex.Message.Contains("duplicate column", StringComparison.OrdinalIgnoreCase))
             {
             }
+        }
+
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE IF NOT EXISTS CopyMirrorEvents(
+                    Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Utc TEXT NOT NULL,
+                    Kind TEXT NOT NULL DEFAULT 'info',
+                    Message TEXT NOT NULL DEFAULT '',
+                    LeadPortfolioId TEXT NOT NULL DEFAULT '',
+                    LeadNickname TEXT NOT NULL DEFAULT '',
+                    Symbol TEXT NULL,
+                    Action TEXT NULL,
+                    Mode TEXT NULL,
+                    Qty REAL NULL,
+                    Price REAL NULL,
+                    QuoteUsdt REAL NULL,
+                    LeadOrderTimeMs INTEGER NULL,
+                    DetectDelayMs INTEGER NULL,
+                    ExecDelayMs INTEGER NULL
+                );
+                """);
+        }
+        catch (SqliteException)
+        {
         }
     }
 
@@ -801,6 +862,12 @@ app.MapPost("/api/bots/{id:guid}/force-sell", async (Guid id, IBotService botSer
 
 app.MapGet("/api/copy-mirror/status", (TradingBots.App.Services.CopyMirror.ICopyMirrorService mirror) =>
     Results.Ok(mirror.GetStatus()));
+
+app.MapGet("/api/copy-mirror/events", (
+    TradingBots.App.Services.CopyMirror.ICopyMirrorService mirror,
+    string? leadPortfolioId,
+    int? take) =>
+    Results.Ok(mirror.GetEvents(leadPortfolioId, take ?? 300)));
 
 app.MapPost("/api/copy-mirror/start", async (
     TradingBots.App.Services.CopyMirror.CopyMirrorSettings request,

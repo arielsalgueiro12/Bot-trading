@@ -15,6 +15,8 @@ public interface ICopyMirrorService
     void Stop(string leadPortfolioId);
     int GetRecommendedDelayMs();
     Task RestorePersistedSessionsAsync(CancellationToken ct = default);
+    /// <summary>Traza persistida (memoria + DB). Filtra por lead opcional.</summary>
+    IReadOnlyList<CopyMirrorEvent> GetEvents(string? leadPortfolioId = null, int take = 300);
     Task<IReadOnlyList<CopyLeadSummary>> GetLeaderboardAsync(
         string dataType = "PNL",
         string nickname = "",
@@ -29,8 +31,11 @@ public sealed class CopyMirrorService(
     ILogger<CopyMirrorService> logger) : ICopyMirrorService
 {
     private readonly object _gate = new();
+    private readonly object _eventGate = new();
     private readonly Dictionary<string, MirrorSession> _sessions = new(StringComparer.Ordinal);
     private readonly ConcurrentQueue<CopyMirrorEvent> _hubEvents = new();
+    private readonly List<CopyMirrorEvent> _eventCache = [];
+    private const int EventCacheMax = 2500;
     private CopyLeadBoardResult? _spotBoardCache;
     private DateTime _spotBoardCacheUtc = DateTime.MinValue;
     private static readonly TimeSpan SpotBoardCacheTtl = TimeSpan.FromMinutes(12);
@@ -82,11 +87,9 @@ public sealed class CopyMirrorService(
                 ActiveCount = sessions.Count,
                 MaxConcurrent = CopyMirrorStatus.MaxConcurrentMirrors,
                 Sessions = sessions,
-                RecentEvents = _hubEvents.Reverse().Take(80).ToList(),
-                RecentMovements = _hubEvents
-                    .Reverse()
+                RecentEvents = SnapshotEvents(null, 120),
+                RecentMovements = SnapshotEvents(null, 80)
                     .Where(e => e.IsMovement && e.Action is "BUY" or "SELL")
-                    .Take(60)
                     .ToList(),
                 Settings = primary?.Settings ?? new CopyMirrorSettings(),
                 WarmingUp = primary?.WarmingUp ?? false,
@@ -110,6 +113,27 @@ public sealed class CopyMirrorService(
         lock (_gate)
         {
             return ComputeRecommendedDelayMsUnlocked();
+        }
+    }
+
+    public IReadOnlyList<CopyMirrorEvent> GetEvents(string? leadPortfolioId = null, int take = 300)
+    {
+        return SnapshotEvents(leadPortfolioId, take);
+    }
+
+    private IReadOnlyList<CopyMirrorEvent> SnapshotEvents(string? leadPortfolioId, int take)
+    {
+        take = Math.Clamp(take, 1, EventCacheMax);
+        lock (_eventGate)
+        {
+            IEnumerable<CopyMirrorEvent> q = _eventCache;
+            if (!string.IsNullOrWhiteSpace(leadPortfolioId))
+            {
+                var id = leadPortfolioId.Trim();
+                q = q.Where(e => string.Equals(e.LeadPortfolioId, id, StringComparison.Ordinal));
+            }
+
+            return q.Take(take).ToList();
         }
     }
 
@@ -261,19 +285,24 @@ public sealed class CopyMirrorService(
                     if (_sessions.TryGetValue(row.LeadPortfolioId, out var session))
                     {
                         ApplyOpenPositionsJson(session, row.OpenPositionsJson);
+                        session.MirroredBuys = Math.Max(0, row.MirroredBuys);
+                        session.MirroredSells = Math.Max(0, row.MirroredSells);
                     }
                 }
             }
 
+            await LoadPersistedEventsAsync(ct);
+
             if (rows.Count > 0)
             {
                 logger.LogInformation("CopyMirror restored {Count} persisted session(s) after restart.", rows.Count);
-                _hubEvents.Enqueue(new CopyMirrorEvent
-                {
-                    Utc = DateTime.UtcNow,
-                    Kind = "info",
-                    Message = $"Restaurados {rows.Count} mirror(s) persistidos tras reinicio/deploy."
-                });
+                PushHubEventStandalone(
+                    "info",
+                    $"Restaurados {rows.Count} mirror(s) persistidos tras reinicio/deploy.");
+            }
+            else
+            {
+                logger.LogInformation("CopyMirror restore: no active sessions; event trail loaded if present.");
             }
         }
         catch (Exception ex)
@@ -312,6 +341,8 @@ public sealed class CopyMirrorService(
                 if (_sessions.TryGetValue(id, out var session))
                 {
                     row.OpenPositionsJson = SerializeOpenPositions(session);
+                    row.MirroredBuys = session.MirroredBuys;
+                    row.MirroredSells = session.MirroredSells;
                 }
             }
 
@@ -1255,7 +1286,7 @@ public sealed class CopyMirrorService(
         int? detectDelayMs = null,
         int? execDelayMs = null)
     {
-        _hubEvents.Enqueue(new CopyMirrorEvent
+        var ev = new CopyMirrorEvent
         {
             Utc = DateTime.UtcNow,
             Kind = kind,
@@ -1271,11 +1302,140 @@ public sealed class CopyMirrorService(
             LeadOrderTimeMs = leadOrderTimeMs,
             DetectDelayMs = detectDelayMs,
             ExecDelayMs = execDelayMs
-        });
+        };
+        RememberEvent(ev);
+        _ = PersistEventAsync(ev);
+    }
 
-        while (_hubEvents.Count > 250 && _hubEvents.TryDequeue(out _))
+    private void PushHubEventStandalone(string kind, string message)
+    {
+        var ev = new CopyMirrorEvent
+        {
+            Utc = DateTime.UtcNow,
+            Kind = kind,
+            Message = message
+        };
+        RememberEvent(ev);
+        _ = PersistEventAsync(ev);
+    }
+
+    private void RememberEvent(CopyMirrorEvent ev)
+    {
+        _hubEvents.Enqueue(ev);
+        while (_hubEvents.Count > EventCacheMax && _hubEvents.TryDequeue(out _))
         {
         }
+
+        lock (_eventGate)
+        {
+            _eventCache.Insert(0, ev);
+            if (_eventCache.Count > EventCacheMax)
+            {
+                _eventCache.RemoveRange(EventCacheMax, _eventCache.Count - EventCacheMax);
+            }
+        }
+    }
+
+    private async Task PersistEventAsync(CopyMirrorEvent ev)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.CopyMirrorEvents.Add(new CopyMirrorPersistedEvent
+            {
+                Utc = ev.Utc,
+                Kind = Trunc(ev.Kind, 24),
+                Message = Trunc(ev.Message, 2000),
+                LeadPortfolioId = Trunc(ev.LeadPortfolioId ?? string.Empty, 40),
+                LeadNickname = Trunc(ev.LeadNickname ?? string.Empty, 120),
+                Symbol = TruncNullable(ev.Symbol, 32),
+                Action = TruncNullable(ev.Action, 16),
+                Mode = TruncNullable(ev.Mode, 16),
+                Qty = ev.Qty,
+                Price = ev.Price,
+                QuoteUsdt = ev.QuoteUsdt,
+                LeadOrderTimeMs = ev.LeadOrderTimeMs,
+                DetectDelayMs = ev.DetectDelayMs,
+                ExecDelayMs = ev.ExecDelayMs
+            });
+            await db.SaveChangesAsync();
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "CopyMirror persist event failed");
+        }
+    }
+
+    private async Task LoadPersistedEventsAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var rows = await db.CopyMirrorEvents
+                .AsNoTracking()
+                .OrderByDescending(x => x.Utc)
+                .ThenByDescending(x => x.Id)
+                .Take(EventCacheMax)
+                .ToListAsync(ct);
+
+            var mapped = rows.Select(r => new CopyMirrorEvent
+            {
+                Utc = r.Utc,
+                Kind = r.Kind,
+                Message = r.Message,
+                LeadPortfolioId = r.LeadPortfolioId,
+                LeadNickname = r.LeadNickname,
+                Symbol = r.Symbol,
+                Action = r.Action,
+                Mode = r.Mode,
+                Qty = r.Qty,
+                Price = r.Price,
+                QuoteUsdt = r.QuoteUsdt,
+                LeadOrderTimeMs = r.LeadOrderTimeMs,
+                DetectDelayMs = r.DetectDelayMs,
+                ExecDelayMs = r.ExecDelayMs
+            }).ToList();
+
+            lock (_eventGate)
+            {
+                _eventCache.Clear();
+                _eventCache.AddRange(mapped);
+            }
+
+            // Recargar cola en orden cronologico (viejo→nuevo) para Reverse() UI.
+            while (_hubEvents.TryDequeue(out _))
+            {
+            }
+
+            foreach (var ev in mapped.AsEnumerable().Reverse())
+            {
+                _hubEvents.Enqueue(ev);
+            }
+
+            logger.LogInformation("CopyMirror loaded {Count} persisted event(s).", mapped.Count);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "CopyMirror load events from DB failed");
+        }
+    }
+
+    private static string Trunc(string? value, int max)
+    {
+        var v = value ?? string.Empty;
+        return v.Length <= max ? v : v[..max];
+    }
+
+    private static string? TruncNullable(string? value, int max)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return value.Length <= max ? value : value[..max];
     }
 
     private static string DisplayName(MirrorSession s) =>

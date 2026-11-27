@@ -17,5 +17,7 @@ public sealed class CopyMirrorPersistedSession
     public int PollIntervalMs { get; set; } = 3500;
     /// <summary>JSON posiciones abiertas: {"spot":{...},"futL":{...},"futS":{...}}.</summary>
     public string OpenPositionsJson { get; set; } = string.Empty;
+    public int MirroredBuys { get; set; }
+    public int MirroredSells { get; set; }
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 }
